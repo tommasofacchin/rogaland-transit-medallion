@@ -1,0 +1,21 @@
+name: Test runner
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "VM su cui eseguire il test"
+        type: choice
+        options: [prod, dev]
+        default: prod
+
+jobs:
+  test:
+    runs-on: [self-hosted, "${{ inputs.target }}"]
+    steps:
+      - name: Info sulla macchina
+        run: |
+          echo "Runner OK"
+          whoami
+          hostname
+          uname -a
