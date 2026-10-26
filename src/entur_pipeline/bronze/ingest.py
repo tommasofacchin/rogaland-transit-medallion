@@ -4,10 +4,15 @@ Follows the Bronze pattern from Lab 2 (Part 10): the raw data is kept unchanged 
 ingestion gets `_bronze_*` metadata (ingestion time, source, status, error). A response that
 is not well-formed XML is still stored, but marked `parse_error`, so nothing is silently lost.
 
+With `compress: true` in the config the snapshot is stored gzip-compressed (`.xml.gz`). Gzip is
+lossless, so the file still decompresses to exactly the bytes Entur sent; `bytes` and `sha256`
+in the metadata always describe the original response.
+
 Layout under data_root:
-    bronze/entur_siri/dt=YYYY-MM-DD/hour=HH/entur_siri_<UTC time>_<run_id>.xml
+    bronze/entur_siri/dt=YYYY-MM-DD/hour=HH/entur_siri_<UTC time>_<run_id>.xml[.gz]
     bronze/entur_siri/_metadata/dt=YYYY-MM-DD.jsonl   (one JSON line per run, also failed runs)
 """
+import gzip
 import hashlib
 import json
 import os
@@ -54,10 +59,11 @@ def check_xml(body):
         return "parse_error", str(exc)
 
 
-def bronze_paths(data_root, ts, run_id):
+def bronze_paths(data_root, ts, run_id, compress=False):
     base = Path(data_root) / "bronze" / "entur_siri"
     folder = base / f"dt={ts:%Y-%m-%d}" / f"hour={ts:%H}"
-    raw_file = folder / f"entur_siri_{ts:%Y%m%dT%H%M%SZ}_{run_id}.xml"
+    suffix = ".xml.gz" if compress else ".xml"
+    raw_file = folder / f"entur_siri_{ts:%Y%m%dT%H%M%SZ}_{run_id}{suffix}"
     meta_file = base / "_metadata" / f"dt={ts:%Y-%m-%d}.jsonl"
     return raw_file, meta_file
 
@@ -79,7 +85,8 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
     e = cfg["entur"]
     params = {"datasetId": e["dataset_id"]}
     headers = {"ET-Client-Name": e["client_name"]}
-    raw_file, meta_file = bronze_paths(cfg["data_root"], ts, run_id)
+    compress = cfg.get("compress", False)
+    raw_file, meta_file = bronze_paths(cfg["data_root"], ts, run_id, compress)
 
     record = {
         "_bronze_ingestion_time": ts.isoformat(),
@@ -92,6 +99,7 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         "_bronze_error": None,
         "http_status": None,
         "bytes": None,
+        "stored_bytes": None,
         "sha256": None,
         "duration_s": None,
         "file": None,
@@ -120,7 +128,10 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
     raw_file.parent.mkdir(parents=True, exist_ok=True)
     if raw_file.exists():
         raise FileExistsError(f"Bronze is never overwritten: {raw_file}")
-    raw_file.write_bytes(body)  # exactly as received, no parsing or cleaning
-    record.update(_bronze_status=status, _bronze_error=error, file=str(raw_file))
+    # Exactly as received, no parsing or cleaning (gzip only if configured; lossless).
+    stored = gzip.compress(body) if compress else body
+    raw_file.write_bytes(stored)
+    record.update(_bronze_status=status, _bronze_error=error, file=str(raw_file),
+                  stored_bytes=len(stored))
     write_metadata(meta_file, record)
     return record

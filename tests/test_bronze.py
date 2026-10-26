@@ -1,3 +1,4 @@
+import gzip
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -108,3 +109,14 @@ def test_bronze_is_never_overwritten(tmp_path, monkeypatch):
     bronze.ingest(make_cfg(tmp_path), now=NOW)
     with pytest.raises(FileExistsError):
         bronze.ingest(make_cfg(tmp_path), now=NOW)
+
+
+def test_compressed_snapshot_decompresses_to_original(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze.requests, "get", fake_get([FakeResponse(SAMPLE)]))
+    cfg = make_cfg(tmp_path) | {"compress": True}
+    record = bronze.ingest(cfg, now=NOW)
+
+    assert record["file"].endswith(".xml.gz")
+    assert gzip.decompress(Path(record["file"]).read_bytes()) == SAMPLE
+    assert record["bytes"] == len(SAMPLE)
+    assert record["stored_bytes"] == Path(record["file"]).stat().st_size

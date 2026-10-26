@@ -13,8 +13,6 @@ from pyspark.sql.window import Window
 
 from entur_pipeline.config import load_config
 
-EXPECTED_RUNS_PER_DAY = 96  # one run every 15 minutes
-
 # Explicit schema (Lab 2, Part 2): no inference pass over the files, and fixed types.
 METADATA_SCHEMA = StructType([
     StructField("_bronze_ingestion_time", StringType()),
@@ -25,6 +23,7 @@ METADATA_SCHEMA = StructType([
     StructField("_bronze_error", StringType()),
     StructField("http_status", LongType()),
     StructField("bytes", LongType()),
+    StructField("stored_bytes", LongType()),
     StructField("sha256", StringType()),
     StructField("file", StringType()),
 ])
@@ -35,6 +34,7 @@ def main():
     parser.add_argument("--config", required=True)
     args = parser.parse_args()
     cfg = load_config(args.config)
+    expected_runs_per_day = 24 * 60 // cfg.get("interval_min", 15)
 
     meta_dir = Path(cfg["data_root"]) / "bronze" / "entur_siri" / "_metadata"
     spark = (SparkSession.builder.master("local[*]").appName("bronze-summary")
@@ -56,7 +56,8 @@ def main():
         F.countDistinct("sha256").alias("distinct_snapshots"),
         F.round(F.avg("bytes") / 1e6, 2).alias("avg_mb"),
         F.round(F.sum("bytes") / 1e6, 1).alias("total_mb"),
-    ).withColumn("missing_runs", F.greatest(F.lit(0), F.lit(EXPECTED_RUNS_PER_DAY) - F.col("runs")))
+        F.round(F.sum(F.coalesce("stored_bytes", "bytes")) / 1e6, 1).alias("on_disk_mb"),
+    ).withColumn("missing_runs", F.greatest(F.lit(0), F.lit(expected_runs_per_day) - F.col("runs")))
      .orderBy("dt"))
     per_day.show(50, truncate=False)
 
@@ -68,10 +69,10 @@ def main():
     gaps = (meta.withColumn("prev", F.lag("ingested_at").over(w))
             .withColumn("gap_min", (F.col("ingested_at").cast("long")
                                     - F.col("prev").cast("long")) / 60)
-            .filter(F.col("gap_min") > 20)
+            .filter(F.col("gap_min") > 2 * cfg.get("interval_min", 15))
             .select("prev", "ingested_at", F.round("gap_min", 1).alias("gap_min"))
             .orderBy(F.desc("gap_min")))
-    print("Gaps longer than 20 minutes:")
+    print(f"Gaps longer than {2 * cfg.get('interval_min', 15)} minutes:")
     gaps.show(20, truncate=False)
 
     spark.stop()

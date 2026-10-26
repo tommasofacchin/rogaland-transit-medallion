@@ -1,4 +1,6 @@
 env: prod
+interval_min: 5    # polling interval; retention test 2026-10-26: trips vanish 8-13 min after their end
+compress: true     # gzip Bronze snapshots (~2.6 GB/day uncompressed at 5 min)
 data_root: /data/entur
 entur:
   et_url: https://api.entur.io/realtime/v1/rest/et
