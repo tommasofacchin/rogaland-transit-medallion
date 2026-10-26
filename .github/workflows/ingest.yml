@@ -4,8 +4,8 @@ name: Bronze ingest
 # Scheduled runs can start a few minutes late: check the "gaps" table in bronze_summary.py.
 # Do not enable the schedule while the cron line on the VM is still active (double fetch).
 on:
-  # schedule:
-  #   - cron: "*/5 * * * *"
+  schedule:
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 # Never overlap two runs; a late run waits instead of being cancelled.
