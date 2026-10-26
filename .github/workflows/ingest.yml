@@ -1,0 +1,23 @@
+name: Bronze ingest
+
+# Fetches one Entur SIRI ET snapshot on the prod VM. Runs only from the default branch.
+# Scheduled runs can start a few minutes late: check the "gaps" table in bronze_summary.py.
+# Do not enable the schedule while the cron line on the VM is still active (double fetch).
+on:
+  # schedule:
+  #   - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+# Never overlap two runs; a late run waits instead of being cancelled.
+concurrency:
+  group: bronze-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    runs-on: [self-hosted, prod]
+    steps:
+      - name: Fetch Bronze snapshot
+        run: |
+          cd ~/app
+          ~/venv/bin/python jobs/run_pipeline.py bronze --config config/prod.yaml
