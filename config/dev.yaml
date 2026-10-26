@@ -1,0 +1,7 @@
+env: dev
+data_root: /data/entur-dev
+entur:
+  et_url: https://api.entur.io/realtime/v1/rest/et
+  dataset_id: KOL
+  client_name: uis-dat535-group05
+  timeout_s: 60
