@@ -6,3 +6,6 @@ spark-warehouse/
 metastore_db/
 derby.log
 probe_*.xml
+
+# personal notes
+docs/tommaso/
