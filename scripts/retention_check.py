@@ -46,7 +46,9 @@ def minutes(delta):
 
 
 def main(bronze_dir):
-    files = sorted(Path(bronze_dir).glob("dt=*/hour=*/*.xml*"))
+    # Skip leftover '_tmp_' files from an interrupted write.
+    files = sorted(p for p in Path(bronze_dir).glob("dt=*/hour=*/entur_siri_*")
+                   if p.name.endswith((".xml", ".xml.gz")))
     if len(files) < 3:
         sys.exit(f"Need at least 3 snapshots, found {len(files)}")
     print(f"Reading {len(files)} snapshots ({snapshot_time(files[0]):%H:%M} to "
@@ -57,26 +59,28 @@ def main(bronze_dir):
         for journey, end in journey_end_times(path).items():
             last_seen[journey] = (i, end)
 
-    stayed, gone_by = [], []
+    disappeared = []  # (stayed, gone_by) in minutes after the trip end
     for i, end in last_seen.values():
         if i == len(files) - 1:
             continue  # still in the newest snapshot: not gone yet
-        stayed.append(minutes(snapshot_time(files[i]) - end))
-        gone_by.append(minutes(snapshot_time(files[i + 1]) - end))
+        disappeared.append((minutes(snapshot_time(files[i]) - end),
+                            minutes(snapshot_time(files[i + 1]) - end)))
 
-    if not stayed:
+    if not disappeared:
         sys.exit("No journey has disappeared yet; let the test run longer.")
 
-    still_running = sum(1 for m in stayed if m < 0)
-    print(f"Journeys seen: {len(last_seen)}, disappeared: {len(stayed)}")
+    still_running = sum(1 for stayed, _ in disappeared if stayed < 0)
+    print(f"Journeys seen: {len(last_seen)}, disappeared: {len(disappeared)}")
     print(f"  of these, {still_running} vanished BEFORE their last planned stop "
           "(cancelled or dropped from the feed)")
-    finished = sorted(m for m in stayed if m >= 0)
+    # Only trips that had ended when last seen; gone_by is taken from the same trips.
+    finished_pairs = [(s, g) for s, g in disappeared if s >= 0]
+    finished = sorted(s for s, _ in finished_pairs)
     if finished:
         print("Finished trips, minutes their last snapshot came after the trip end:")
         print(f"  min {finished[0]:.0f}, median {statistics.median(finished):.0f}, "
               f"max {finished[-1]:.0f}")
-        print(f"  gone at most {statistics.median(sorted(g for g in gone_by if g >= 0)):.0f} "
+        print(f"  gone at most {statistics.median(g for _, g in finished_pairs):.0f} "
               "min after the end (median)")
         for interval in (5, 15):
             share = sum(1 for m in finished if m >= interval) / len(finished)

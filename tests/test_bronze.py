@@ -120,3 +120,24 @@ def test_compressed_snapshot_decompresses_to_original(tmp_path, monkeypatch):
     assert gzip.decompress(Path(record["file"]).read_bytes()) == SAMPLE
     assert record["bytes"] == len(SAMPLE)
     assert record["stored_bytes"] == Path(record["file"]).stat().st_size
+
+
+def test_duplicate_run_is_logged_as_write_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze.requests, "get",
+                        fake_get([FakeResponse(SAMPLE), FakeResponse(SAMPLE)]))
+    bronze.ingest(make_cfg(tmp_path), now=NOW)
+    with pytest.raises(FileExistsError):
+        bronze.ingest(make_cfg(tmp_path), now=NOW)
+
+    first, second = read_meta(tmp_path)
+    assert first["_bronze_status"] == "valid"
+    assert second["_bronze_status"] == "write_error"
+    assert second["file"] is None
+
+
+def test_no_temp_file_left_after_write(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze.requests, "get", fake_get([FakeResponse(SAMPLE)]))
+    record = bronze.ingest(make_cfg(tmp_path), now=NOW)
+
+    assert [p.name for p in Path(record["file"]).parent.iterdir()] == [Path(record["file"]).name]
+    assert record["_bronze_fetched_at"] is not None

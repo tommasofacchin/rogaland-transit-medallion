@@ -68,6 +68,19 @@ def bronze_paths(data_root, ts, run_id, compress=False):
     return raw_file, meta_file
 
 
+def write_snapshot(raw_file, data):
+    """Write to a temp file, then rename: a crash never leaves a half-written snapshot.
+
+    The temp name starts with '_' so Spark (and retention_check) skip it if one is left behind.
+    """
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    if raw_file.exists():
+        raise FileExistsError(f"Bronze is never overwritten: {raw_file}")
+    tmp_file = raw_file.with_name(f"_tmp_{raw_file.name}")
+    tmp_file.write_bytes(data)
+    os.replace(tmp_file, raw_file)
+
+
 def write_metadata(meta_file, record):
     meta_file.parent.mkdir(parents=True, exist_ok=True)
     with open(meta_file, "a") as f:
@@ -97,6 +110,7 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         "_bronze_params": params,
         "_bronze_status": None,
         "_bronze_error": None,
+        "_bronze_fetched_at": None,
         "http_status": None,
         "bytes": None,
         "stored_bytes": None,
@@ -115,7 +129,9 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         raise
 
     body = resp.content
-    record.update(http_status=resp.status_code, bytes=len(body),
+    # The file name uses the start time; with retries the data itself can be minutes newer.
+    record.update(_bronze_fetched_at=datetime.now(timezone.utc).isoformat(),
+                  http_status=resp.status_code, bytes=len(body),
                   sha256=hashlib.sha256(body).hexdigest(),
                   duration_s=round(time.monotonic() - started, 2))
 
@@ -125,12 +141,14 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         resp.raise_for_status()
 
     status, error = check_xml(body)
-    raw_file.parent.mkdir(parents=True, exist_ok=True)
-    if raw_file.exists():
-        raise FileExistsError(f"Bronze is never overwritten: {raw_file}")
     # Exactly as received, no parsing or cleaning (gzip only if configured; lossless).
     stored = gzip.compress(body) if compress else body
-    raw_file.write_bytes(stored)
+    try:
+        write_snapshot(raw_file, stored)
+    except OSError as exc:  # includes FileExistsError, disk full, permissions
+        record.update(_bronze_status="write_error", _bronze_error=repr(exc))
+        write_metadata(meta_file, record)
+        raise
     record.update(_bronze_status=status, _bronze_error=error, file=str(raw_file),
                   stored_bytes=len(stored))
     write_metadata(meta_file, record)
