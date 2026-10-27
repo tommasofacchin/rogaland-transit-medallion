@@ -8,7 +8,13 @@ trip has no arrival and the last has no departure. `*_actual_or_expected_*` hold
 time for recorded calls and the prediction for estimated calls (see `call_status`).
 """
 from pyspark.sql.types import (
-    BooleanType, DateType, IntegerType, StringType, StructField, StructType, TimestampType,
+    BooleanType,
+    DateType,
+    IntegerType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
 STOP_CALLS_SCHEMA = StructType([

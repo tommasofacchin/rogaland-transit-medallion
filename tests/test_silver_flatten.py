@@ -29,7 +29,7 @@ def test_last_stop_has_no_departure():
 
 
 def test_recorded_call_uses_actual_time():
-    recorded = [r for r in _rows() if r["call_status"] == "recorded"][0]
+    recorded = next(r for r in _rows() if r["call_status"] == "recorded")
     assert recorded["actual_or_expected_departure"] == "2026-10-27T13:46:35+01:00"
 
 
