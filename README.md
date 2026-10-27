@@ -26,7 +26,7 @@ Processing is done with PySpark, and GitHub Actions handles testing, deployment 
 
 ## Status
 
-Bronze is running: a scheduled job on the prod VM fetches a snapshot every 5 minutes into `/data/entur` (see [scripts/run_bronze_cron.sh](scripts/run_bronze_cron.sh)). Silver and Gold come next. Things will change here as we go.
+Bronze is done and collecting: a cron job on the prod VM fetches a snapshot every 5 minutes into `/data/entur` (see [scripts/run_bronze_cron.sh](scripts/run_bronze_cron.sh)). GitHub Actions deploys the code to the VMs on every push to `main` and `dev`; the Bronze workflow can be triggered manually but has no schedule, because GitHub's scheduled runs are unreliable at this frequency. Silver and Gold come next. Things will change here as we go.
 
 - [docs/plan.md](docs/plan.md): scope, design for each layer, who does what, timeline
 - [docs/Guideline.md](docs/Guideline.md): the course guideline we're following
