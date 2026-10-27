@@ -26,7 +26,7 @@ Processing is done with PySpark, and GitHub Actions handles testing, deployment 
 
 ## Status
 
-Early days. Right now we have the plan and the guideline in [docs/](docs/). Code comes next, starting with Bronze. Things will change here as we go.
+Bronze is running: a scheduled job on the prod VM fetches a snapshot every 5 minutes into `/data/entur` (see [scripts/run_bronze_cron.sh](scripts/run_bronze_cron.sh)). Silver and Gold come next. Things will change here as we go.
 
 - [docs/plan.md](docs/plan.md): scope, design for each layer, who does what, timeline
 - [docs/Guideline.md](docs/Guideline.md): the course guideline we're following
