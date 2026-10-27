@@ -1,0 +1,32 @@
+name: Deploy
+
+# Updates the app folder on the VM when code lands on main (prod) or dev (dev).
+on:
+  push:
+    branches: [main, dev]
+
+# One deploy at a time per branch; a later one waits instead of cancelling.
+concurrency:
+  group: deploy-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  deploy-prod:
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, prod]
+    environment: prod
+    steps:
+      - run: |
+          cd ~/app
+          git pull --ff-only origin main
+          ~/venv/bin/pip install -e .
+
+  deploy-dev:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: [self-hosted, dev]
+    environment: dev
+    steps:
+      - run: |
+          cd ~/app
+          git pull --ff-only origin dev
+          ~/venv/bin/pip install -e .
