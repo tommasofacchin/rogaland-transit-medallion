@@ -8,6 +8,7 @@ one from the latest snapshot wins. Exact duplicates (e.g. a snapshot fetched twi
 from pyspark.sql import Window
 from pyspark.sql import functions as F
 
+KEY = ["journey_id", "service_date", "stop_order"]
 
 def dedup_stop_calls(df):
     """Return `df` with exactly one row per key, chosen as described in the module docstring."""
