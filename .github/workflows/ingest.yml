@@ -1,11 +1,9 @@
 name: Bronze ingest
 
 # Fetches one Entur SIRI ET snapshot on the prod VM. Runs only from the default branch.
-# Scheduled runs can start a few minutes late: check the "gaps" table in bronze_summary.py.
-# Do not enable the schedule while the cron line on the VM is still active (double fetch).
+# No schedule: the 5-min collection runs from cron on the VM (scripts/run_bronze_cron.sh).
+# A schedule here would fetch every snapshot twice. Trigger manually only for tests.
 on:
-  schedule:
-    - cron: "2-59/5 * * * *"
   workflow_dispatch:
 
 # Never overlap two runs; a late run waits instead of being cancelled.
