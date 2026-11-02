@@ -5,6 +5,7 @@
 
 import argparse
 import json
+import os
 import sys
 from datetime import date
 
@@ -33,6 +34,9 @@ def main(argv=None):
         if record["_bronze_status"] != "valid":
             return 1
     elif args.step == "silver":
+
+        os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+
         from pyspark.sql import SparkSession
         
         from entur_pipeline.silver.build import build_silver

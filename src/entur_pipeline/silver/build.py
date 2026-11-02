@@ -12,6 +12,8 @@ import xml.etree.ElementTree as ET
 from datetime import date
 from pathlib import Path
 
+from pyspark import StorageLevel
+
 from entur_pipeline.silver.dedup import KEY, dedup_stop_calls
 from entur_pipeline.silver.flatten import flatten_snapshot
 from entur_pipeline.silver.schema import STOP_CALLS_SCHEMA
@@ -38,34 +40,51 @@ def run_id_from_path(path):
     return name.split("_", 3)[3]
 
 
+def read_file(path):
+    """Flatten and standardize one file. Returns (rows, skipped, dropped).
+
+    `skipped` is None, or (path, error) if the file could not be read. Runs on the workers.
+    """
+    try:
+        flat = flatten_snapshot(path, run_id_from_path(path))
+    except (ET.ParseError, EOFError, OSError) as exc:
+        return [], (str(path), repr(exc)), 0
+    rows, dropped = [], 0
+    for raw in flat:
+        try:
+            row = standardize_row(raw)
+        except (TypeError, ValueError):
+            dropped += 1
+            continue
+        if any(row[column] is None for column in REQUIRED):
+            dropped += 1
+            continue
+        rows.append(row)
+    return rows, None, dropped
+
+
 def read_rows(paths):
-    """Flatten and standardize every file. Returns (rows, skipped_files, dropped_rows)."""
+    """Flatten and standardize every file in the driver. Returns (rows, skipped, dropped)."""
     rows, skipped, dropped = [], [], 0
     for path in paths:
-        try:
-            flat = flatten_snapshot(path, run_id_from_path(path))
-        except (ET.ParseError, EOFError, OSError) as exc:
-            skipped.append((str(path), repr(exc)))
-            continue
-        for raw in flat:
-            try:
-                row = standardize_row(raw)
-            except (TypeError, ValueError):
-                dropped += 1
-                continue
-            if any(row[column] is None for column in REQUIRED):
-                dropped += 1
-                continue
-            rows.append(row)
+        file_rows, file_skipped, file_dropped = read_file(path)
+        rows.extend(file_rows)
+        if file_skipped is not None:
+            skipped.append(file_skipped)
+        dropped += file_dropped
     return rows, skipped, dropped
 
 
 def build_silver(spark, cfg, date_from=None, date_to=None):
     """Build `stop_calls` for the given Bronze dates. Returns a small dict of counts."""
-    paths = list_bronze_files(cfg["data_root"], date_from, date_to)
-    rows, skipped, dropped = read_rows(paths)
+    paths = [str(p) for p in list_bronze_files(cfg["data_root"], date_from, date_to)]
 
-    df = spark.createDataFrame(rows, STOP_CALLS_SCHEMA)
+    # One task per file group: the workers read and flatten, the driver only holds the paths
+    sc = spark.sparkContext
+    slices = max(1, min(len(paths), sc.defaultParallelism))
+    results = sc.parallelize(paths, slices).map(read_file).persist(StorageLevel.MEMORY_AND_DISK)
+
+    df = spark.createDataFrame(results.flatMap(lambda r: r[0]), STOP_CALLS_SCHEMA)
     deduped = dedup_stop_calls(df).cache()
 
     # Overwrite only the service dates present in this run, not the whole table
@@ -73,11 +92,14 @@ def build_silver(spark, cfg, date_from=None, date_to=None):
     out = Path(cfg["data_root"]) / "silver" / "stop_calls"
     deduped.write.mode("overwrite").partitionBy("service_date").parquet(str(out))
 
-    return {
+    skipped = results.filter(lambda r: r[1] is not None).map(lambda r: r[1]).collect()
+    summary = {
         "files_read": len(paths) - len(skipped),
         "files_skipped": len(skipped),
-        "rows_dropped": dropped,
-        "rows_before_dedup": len(rows),
+        "rows_dropped": results.map(lambda r: r[2]).sum(),
+        "rows_before_dedup": results.map(lambda r: len(r[0])).sum(),
         "rows_after_dedup": deduped.count(),
         "output": str(out),
     }
+    results.unpersist()
+    return summary
