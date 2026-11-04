@@ -20,9 +20,9 @@ def main(argv=None):
     parser.add_argument("step", choices=STEPS)
     parser.add_argument("--config", required=True, help="config/dev.yaml or config/prod.yaml")
     parser.add_argument("--from", dest="date_from", type=date.fromisoformat,
-                        help="silver: first Bronze day (dt=), YYYY-MM-DD")
+                        help="silver: first service date, YYYY-MM-DD")
     parser.add_argument("--to", dest="date_to", type=date.fromisoformat,
-                        help="silver: last Bronze day (dt=), YYYY-MM-DD")
+                        help="silver: last service date, YYYY-MM-DD")
 
     args = parser.parse_args(argv)
 
@@ -38,12 +38,13 @@ def main(argv=None):
         os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 
         from pyspark.sql import SparkSession
-        
+
         from entur_pipeline.silver.build import build_silver
 
         spark = SparkSession.builder.appName("entur-silver").getOrCreate()
         try:
-            result = build_silver(spark, cfg, args.date_from, args.date_to)
+            result = build_silver(spark, cfg, args.date_from, args.date_to,
+                                  run_id=os.environ.get("GITHUB_RUN_ID", "local"))
         finally:
             spark.stop()
         print(json.dumps(result, indent=2))
