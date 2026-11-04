@@ -1,23 +1,9 @@
 from datetime import date, datetime, timezone
 
-import pytest
-from pyspark.sql import SparkSession
-
 from entur_pipeline.silver.dedup import dedup_stop_calls
 from entur_pipeline.silver.schema import STOP_CALLS_SCHEMA
 
 UTC = timezone.utc
-
-
-@pytest.fixture(scope="module")
-def spark():
-    session = (
-        SparkSession.builder.master("local[1]")
-        .config("spark.sql.shuffle.partitions", "1")
-        .getOrCreate()
-    )
-    yield session
-    session.stop()
 
 
 def _row(**kw):
