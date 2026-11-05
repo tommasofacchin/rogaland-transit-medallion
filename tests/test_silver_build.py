@@ -108,10 +108,69 @@ def test_unreadable_files_are_skipped_not_fatal(tmp_path):
     assert sorted(Path(p).name for p, _ in skipped) == [bad_xml.name, bad_gz.name]
 
 
-def test_row_with_missing_key_is_dropped_and_counted(tmp_path):
+def test_row_with_missing_key_reaches_the_rules(tmp_path):
+    # no <Order>: not dropped here, the MISSING_KEY rule rejects it later
     path = tmp_path / "entur_siri_20261027T130002Z_drop-1.xml"
     path.write_text(NO_ORDER_XML)
     rows, skipped, dropped = read_rows([path])
-    assert [r["stop_order"] for r in rows] == [2]
-    assert dropped == 1
+    assert sorted(r["stop_order"] or 0 for r in rows) == [0, 2]
+    assert dropped == 0
     assert skipped == []
+
+
+# build_silver end to end
+
+def test_build_silver_twice_gives_the_same_table(spark, tmp_path):
+    from entur_pipeline.silver.build import build_silver
+
+    folder = tmp_path / "bronze" / "entur_siri" / "dt=2026-10-27" / "hour=13"
+    folder.mkdir(parents=True)
+    shutil.copy(FIXTURE, folder / "entur_siri_20261027T130002Z_a-1.xml")
+    shutil.copy(FIXTURE, folder / "entur_siri_20261027T130502Z_b-1.xml")  # same data again
+    cfg = {"data_root": str(tmp_path)}
+
+    first = build_silver(spark, cfg, run_id="r1")
+    second = build_silver(spark, cfg, run_id="r2")
+
+    silver = spark.read.parquet(str(tmp_path / "silver" / "stop_calls"))
+    assert silver.count() == first["rows_silver"] == second["rows_silver"] == 6
+    assert first["duplicate_keys_after_dedup"] == 0
+    quality = spark.read.parquet(str(tmp_path / "silver" / "quality"))
+    assert quality.select("run_id").distinct().count() == 2
+
+
+def _journey_xml(snapshot, service_date, journey_id):
+    """One snapshot with one journey that has one recorded stop."""
+    return f"""<Siri xmlns="http://www.siri.org.uk/siri"><ServiceDelivery>
+<ResponseTimestamp>{snapshot}</ResponseTimestamp>
+<EstimatedTimetableDelivery><EstimatedJourneyVersionFrame><EstimatedVehicleJourney>
+<LineRef>L1</LineRef>
+<FramedVehicleJourneyRef><DataFrameRef>{service_date}</DataFrameRef>
+<DatedVehicleJourneyRef>{journey_id}</DatedVehicleJourneyRef></FramedVehicleJourneyRef>
+<RecordedCalls><RecordedCall><StopPointRef>S1</StopPointRef><Order>1</Order>
+<AimedArrivalTime>{snapshot}</AimedArrivalTime><ActualArrivalTime>{snapshot}</ActualArrivalTime>
+</RecordedCall></RecordedCalls>
+</EstimatedVehicleJourney></EstimatedJourneyVersionFrame></EstimatedTimetableDelivery>
+</ServiceDelivery></Siri>"""
+
+
+def test_partial_rerun_keeps_night_trips(spark, tmp_path):
+    from entur_pipeline.silver.build import build_silver
+
+    day = _bronze_file(tmp_path, "2026-10-27", "20", "entur_siri_20261027T200000Z_a-1.xml")
+    day.write_text(_journey_xml("2026-10-27T20:00:00+00:00", "2026-10-27", "DAY"))
+    # trip of the 27th that is still running after midnight UTC
+    night = _bronze_file(tmp_path, "2026-10-28", "00", "entur_siri_20261028T000500Z_b-1.xml")
+    night.write_text(_journey_xml("2026-10-28T00:05:00+00:00", "2026-10-27", "NIGHT"))
+    cfg = {"data_root": str(tmp_path)}
+
+    build_silver(spark, cfg, run_id="r1")
+    # rerun only the 28th: the 27th must not be touched
+    build_silver(spark, cfg, date(2026, 10, 28), date(2026, 10, 28), run_id="r2")
+    rows = spark.read.parquet(str(tmp_path / "silver" / "stop_calls")).collect()
+    assert sorted(r.journey_id for r in rows) == ["DAY", "NIGHT"]
+
+    # rerun only the 27th: the night trip in the 28th's files is still found
+    build_silver(spark, cfg, date(2026, 10, 27), date(2026, 10, 27), run_id="r3")
+    rows = spark.read.parquet(str(tmp_path / "silver" / "stop_calls")).collect()
+    assert sorted(r.journey_id for r in rows) == ["DAY", "NIGHT"]
