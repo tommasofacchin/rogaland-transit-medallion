@@ -41,7 +41,9 @@ def main(argv=None):
 
         from entur_pipeline.silver.build import build_silver
 
-        spark = SparkSession.builder.appName("entur-silver").getOrCreate()
+        spark = (SparkSession.builder.appName("entur-silver")
+                 .config("spark.driver.memory", "4g")
+                 .getOrCreate())
         try:
             result = build_silver(spark, cfg, args.date_from, args.date_to,
                                   run_id=os.environ.get("GITHUB_RUN_ID", "local"))
