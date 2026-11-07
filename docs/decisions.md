@@ -101,4 +101,42 @@ dedup, so a stop seen in 10 snapshots counts once.
 First run on dev (the 33 snapshots from the retention test):
 446,363 rows became 33,077 stops after dedup, 0 rows rejected, 0 duplicates left.
 The 1,149 empty planned arrivals and departures are the first and last stops of the trips,
-so that is normal.
+so that is normal. 30 stops were delay outliers and 92 were left out of punctuality (the outliers plus
+stops on cancelled trips).
+
+## 2026-11-07 Bronze clean-up (O)
+Removed two metadata fields nobody used (`_bronze_params`, `duration_s`) and made the
+config check and comments simpler. `bronze_summary.py` now compares each day with 288 runs
+instead of working out the exact collection window. The first and last day show missing
+runs because they are not full days; the gaps table shows the real gaps.
+All folder and file times in Bronze are UTC (Norway is UTC+1 now), so 22:45 in Norway
+is in `hour=21`. Gold has to convert to Norway time before it groups by hour.
+
+## 2026-11-07 First Silver run on prod (O)
+The first run crashed with OutOfMemory: Spark uses 1 GB by default, and the files were split
+into only 4 big tasks. With 4 GB and one task per file, one day takes about 5.5 minutes.
+We backfilled 27 Oct - 6 Nov by hand: about 154k stops on weekdays, 87k on Saturday and 55k
+on Sunday (weekend timetable).
+
+## 2026-11-07 Delay limits stay at -10 min and 3 h (O)
+99.8% of stops are between -5 and 60 min (median +2.2 min). Below -10 min there were 702
+stops, and the worst were times from the day before. Above 3 h there were only 17 stops,
+from 2 trips shifted by 4-11 hours on every stop, so these are feed errors and not real delays.
+
+## 2026-11-07 Gold: two tables with counts, hour in Norway time (O)
+`punctuality_by_line_hour` and `punctuality_by_stop`, one row per service date and group.
+On time = from 1 min early to 3 min late. We store the counts (calls, on time, late, early,
+cancelled) and not only the shares, so the demo can add up any period and still get the right
+share. The hour is converted from UTC to Europe/Oslo before grouping, otherwise "8 o'clock"
+would be 9 in Norway. Stops are grouped by `stop_id`, because some lines send no stop names.
+
+## 2026-11-07 Gold is only written when Silver looks complete (O)
+Before writing, Gold checks that every day has at least 20,000 Silver rows (a Sunday has about
+55k) and that the calls in each Gold table add up to the Silver rows. If not, nothing is written,
+the old Gold stays, the step exits with an error and the run is logged as `failed` in
+`gold/_status/status.jsonl`. That file also tells a consumer when Gold was last updated.
+
+## 2026-11-07 Schedule: cron for Bronze, GitHub Actions for Silver and Gold (O)
+Bronze needs exact 5 minute timing, so it stays on cron. Silver and Gold run once a day, where a
+late start does not matter, so they can run in GitHub Actions on the prod runner. That gives us
+run history, logs and a red/green status. The days before the schedule were run by hand once.
