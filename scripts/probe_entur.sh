@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Step D1: look at what the Entur SIRI ET endpoint really returns.
+# Download one ET response and print a few counts from it.
 # Usage: scripts/probe_entur.sh [datasetId]     (default KOL)
 set -euo pipefail
 DATASET="${1:-KOL}"

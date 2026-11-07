@@ -1,7 +1,6 @@
-"""Bronze collection summary with Spark: how many runs per day, how many failed, any gaps.
+"""Summary of the Bronze collection: runs per day, failed runs and gaps.
 
-Same idea as the pipeline validation summary in Lab 2 (Part 11), applied to the Bronze
-metadata. Usage:  python jobs/bronze_summary.py --config config/prod.yaml
+Usage: python jobs/bronze_summary.py --config config/prod.yaml
 """
 import argparse
 from pathlib import Path
@@ -13,7 +12,7 @@ from pyspark.sql.window import Window
 
 from entur_pipeline.config import load_config
 
-# Explicit schema (Lab 2, Part 2): no inference pass over the files, and fixed types.
+# fixed schema, so Spark doesn't have to guess the types
 METADATA_SCHEMA = StructType([
     StructField("_bronze_ingestion_time", StringType()),
     StructField("_bronze_source", StringType()),
@@ -37,7 +36,7 @@ def main():
     interval = cfg["interval_min"]
 
     meta_dir = Path(cfg["data_root"]) / "bronze" / "entur_siri" / "_metadata"
-    # Bronze partitions (dt=...) are UTC dates, so Spark must use UTC too, whatever the machine.
+   # dt= folders are UTC days, so Spark should use UTC too
     spark = (SparkSession.builder.master("local[*]").appName("bronze-summary")
              .config("spark.sql.shuffle.partitions", "4")
              .config("spark.sql.session.timeZone", "UTC").getOrCreate())
@@ -50,17 +49,9 @@ def main():
     print("=" * 60)
     print(f"BRONZE COLLECTION SUMMARY [{cfg['env']}]")
     print("=" * 60)
-
-    # Expected runs only count the part of each day inside the collection period, so the first
-    # day (started mid-day) and today (not over yet) do not show fake missing runs.
-    bounds = meta.agg(F.min("ingested_at").alias("first_run"),
-                      F.max("ingested_at").alias("last_run"))
-    day_start = F.col("dt").cast("timestamp")
-    window_start = F.greatest(day_start, F.col("first_run"))
-    window_end = F.least(day_start + F.expr("INTERVAL 1 DAY"),
-                         F.col("last_run") + F.expr(f"INTERVAL {interval} MINUTES"))
-    expected_runs = F.ceil((F.unix_timestamp(window_end) - F.unix_timestamp(window_start))
-                           / 60 / interval)
+    
+    # a full day has 24 * 60 / 5 = 288 runs. The first day and today are not full days, so they always show some missing runs
+    runs_per_day = 24 * 60 // interval
 
     per_day = (meta.groupBy("dt").agg(
         F.count("*").alias("runs"),
@@ -70,18 +61,15 @@ def main():
         F.round(F.avg("bytes") / 1e6, 2).alias("avg_mb"),
         F.round(F.sum("bytes") / 1e6, 1).alias("total_mb"),
         F.round(F.sum(F.coalesce("stored_bytes", "bytes")) / 1e6, 1).alias("on_disk_mb"),
-    ).crossJoin(bounds)
-     .withColumn("expected_runs", expected_runs)
-     .withColumn("missing_runs", F.greatest(F.lit(0), F.col("expected_runs") - F.col("runs")))
-     .drop("first_run", "last_run")
-     .orderBy("dt"))
+    )
+        .withColumn("missing_runs", F.greatest(F.lit(0), runs_per_day - F.col("runs")))
+        .orderBy("dt"))
     per_day.show(50, truncate=False)
 
     print("Runs by status:")
     meta.groupBy("_bronze_status").count().orderBy("_bronze_status").show(truncate=False)
 
-    # Largest gap between consecutive valid snapshots (window function, as in Lab 3 Part 1).
-    # Failed runs are left out: an outage logs a failed run every interval, but no data.
+    # gaps between valid snapshots; failed runs don't count because they have no data
     w = Window.orderBy("ingested_at")
     gaps = (meta.filter(F.col("_bronze_status") == "valid")
             .withColumn("prev", F.lag("ingested_at").over(w))
