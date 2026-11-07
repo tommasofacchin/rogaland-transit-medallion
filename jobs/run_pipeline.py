@@ -1,7 +1,4 @@
-"""One entry point for every pipeline step: python jobs/run_pipeline.py <step> --config <file>.
-
-`bronze` and `silver` exist so far; `gold` is added later.
-"""
+"""One entry point for every pipeline step: python jobs/run_pipeline.py <step> --config <file>."""
 
 import argparse
 import json
@@ -12,7 +9,18 @@ from datetime import date
 from entur_pipeline.bronze.ingest import ingest
 from entur_pipeline.config import load_config
 
-STEPS = ["bronze", "silver"]
+STEPS = ["bronze", "silver", "gold"]
+
+
+def start_spark(name):
+    os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
+    from pyspark.sql import SparkSession
+
+    # default is 1 GB, too little for a day of snapshots (the VMs have 8 GB)
+    return (SparkSession.builder.appName(name)
+            .config("spark.driver.memory", "4g")
+            .config("spark.sql.session.timeZone", "UTC")  # all our times are UTC
+            .getOrCreate())
 
 
 def main(argv=None):
@@ -20,13 +28,14 @@ def main(argv=None):
     parser.add_argument("step", choices=STEPS)
     parser.add_argument("--config", required=True, help="config/dev.yaml or config/prod.yaml")
     parser.add_argument("--from", dest="date_from", type=date.fromisoformat,
-                        help="silver: first service date, YYYY-MM-DD")
+                        help="silver/gold: first service date, YYYY-MM-DD")
     parser.add_argument("--to", dest="date_to", type=date.fromisoformat,
-                        help="silver: last service date, YYYY-MM-DD")
+                        help="silver/gold: last service date, YYYY-MM-DD")
 
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    run_id = os.environ.get("GITHUB_RUN_ID", "local")
     print(f"[{cfg['env']}] running step: {args.step}")
     if args.step == "bronze":
         record = ingest(cfg)
@@ -34,22 +43,25 @@ def main(argv=None):
         if record["_bronze_status"] != "valid":
             return 1
     elif args.step == "silver":
-
-        os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
-
-        from pyspark.sql import SparkSession
-
         from entur_pipeline.silver.build import build_silver
 
-        spark = (SparkSession.builder.appName("entur-silver")
-                 .config("spark.driver.memory", "4g")
-                 .getOrCreate())
+        spark = start_spark("entur-silver")
         try:
-            result = build_silver(spark, cfg, args.date_from, args.date_to,
-                                  run_id=os.environ.get("GITHUB_RUN_ID", "local"))
+            result = build_silver(spark, cfg, args.date_from, args.date_to, run_id=run_id)
         finally:
             spark.stop()
         print(json.dumps(result, indent=2))
+    elif args.step == "gold":
+        from entur_pipeline.gold.build import build_gold
+
+        spark = start_spark("entur-gold")
+        try:
+            result = build_gold(spark, cfg, args.date_from, args.date_to, run_id=run_id)
+        finally:
+            spark.stop()
+        print(json.dumps(result, indent=2, default=str))
+        if result["status"] != "ok":
+            return 1  # so the workflow run shows up red
 
     return 0
 
