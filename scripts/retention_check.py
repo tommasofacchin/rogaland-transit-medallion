@@ -1,12 +1,5 @@
-"""Retention test (guide step 5): how long does a finished trip stay in the Entur feed?
+"""How long does a finished trip stay in the Entur feed? Run on a folder of snapshots."""
 
-For every journey that disappeared during the test, compare the end of the trip (the latest
-arrival/departure time of its calls in the last snapshot that still contained it) with:
-  - last_seen: time of that last snapshot            -> it stayed at least this long after the end
-  - gone_by:   time of the next snapshot (without it) -> it was gone at most this long after the end
-
-Usage: python scripts/retention_check.py /data/entur-dev/bronze/entur_siri
-"""
 import gzip
 import statistics
 import sys

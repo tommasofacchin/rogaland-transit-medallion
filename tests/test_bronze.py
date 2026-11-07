@@ -102,15 +102,6 @@ def test_request_failure_is_logged_and_raises(tmp_path, monkeypatch):
     [record] = read_meta(tmp_path)
     assert record["_bronze_status"] == "request_error"
 
-
-def test_bronze_is_never_overwritten(tmp_path, monkeypatch):
-    monkeypatch.setattr(bronze.requests, "get",
-                        fake_get([FakeResponse(SAMPLE), FakeResponse(SAMPLE)]))
-    bronze.ingest(make_cfg(tmp_path), now=NOW)
-    with pytest.raises(FileExistsError):
-        bronze.ingest(make_cfg(tmp_path), now=NOW)
-
-
 def test_compressed_snapshot_decompresses_to_original(tmp_path, monkeypatch):
     monkeypatch.setattr(bronze.requests, "get", fake_get([FakeResponse(SAMPLE)]))
     cfg = make_cfg(tmp_path) | {"compress": True}

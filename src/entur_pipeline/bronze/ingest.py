@@ -1,17 +1,5 @@
-"""Bronze layer: store one Entur SIRI ET snapshot exactly as received, plus lineage metadata.
+"""Bronze: save one Entur SIRI ET snapshot as it was received, plus a line of metadata."""
 
-Follows the Bronze pattern from Lab 2 (Part 10): the raw data is kept unchanged and every
-ingestion gets `_bronze_*` metadata (ingestion time, source, status, error). A response that
-is not well-formed XML is still stored, but marked `parse_error`, so nothing is silently lost.
-
-With `compress: true` in the config the snapshot is stored gzip-compressed (`.xml.gz`). Gzip is
-lossless, so the file still decompresses to exactly the bytes Entur sent; `bytes` and `sha256`
-in the metadata always describe the original response.
-
-Layout under data_root:
-    bronze/entur_siri/dt=YYYY-MM-DD/hour=HH/entur_siri_<UTC time>_<run_id>.xml[.gz]
-    bronze/entur_siri/_metadata/dt=YYYY-MM-DD.jsonl   (one JSON line per run, also failed runs)
-"""
 import gzip
 import hashlib
 import json
@@ -51,7 +39,7 @@ def fetch(url, params, headers, timeout, attempts=3, wait_s=RETRY_WAIT_S):
 
 
 def check_xml(body):
-    """Return (status, error) like Lab 2's parse_event_with_metadata: 'valid' or 'parse_error'."""
+    """Return ("valid", None) or ("parse_error", message)."""
     try:
         ET.fromstring(body)
         return "valid", None
@@ -69,10 +57,7 @@ def bronze_paths(data_root, ts, run_id, compress=False):
 
 
 def write_snapshot(raw_file, data):
-    """Write to a temp file, then rename: a crash never leaves a half-written snapshot.
-
-    The temp name starts with '_' so Spark (and retention_check) skip it if one is left behind.
-    """
+    """Write to a _tmp_ file first and rename it, so a crash never leaves half a file."""
     raw_file.parent.mkdir(parents=True, exist_ok=True)
     if raw_file.exists():
         raise FileExistsError(f"Bronze is never overwritten: {raw_file}")
@@ -88,11 +73,7 @@ def write_metadata(meta_file, record):
 
 
 def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
-    """Fetch one snapshot and store it in Bronze. Returns the metadata record.
-
-    Raises after writing the metadata if the request failed, so a cron job or GitHub
-    Actions run shows up as failed while the failure is still recorded in _metadata.
-    """
+    """Fetch one snapshot and save it. If something fails, write the metadata line first, then raise."""
     ts = now or datetime.now(timezone.utc)
     run_id = run_id_from_env()
     e = cfg["entur"]
@@ -107,7 +88,6 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         "_bronze_run_id": run_id,
         "_bronze_env": cfg["env"],
         "_bronze_endpoint": e["et_url"],
-        "_bronze_params": params,
         "_bronze_status": None,
         "_bronze_error": None,
         "_bronze_fetched_at": None,
@@ -115,25 +95,21 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         "bytes": None,
         "stored_bytes": None,
         "sha256": None,
-        "duration_s": None,
         "file": None,
     }
 
-    started = time.monotonic()
     try:
         resp = fetch(e["et_url"], params, headers, e.get("timeout_s", 60), wait_s=wait_s)
     except RuntimeError as exc:
-        record.update(_bronze_status="request_error", _bronze_error=str(exc),
-                      duration_s=round(time.monotonic() - started, 2))
+        record.update(_bronze_status="request_error", _bronze_error=str(exc))
         write_metadata(meta_file, record)
         raise
 
     body = resp.content
-    # The file name uses the start time; with retries the data itself can be minutes newer.
+    # can be later than the file name time if we retried
     record.update(_bronze_fetched_at=datetime.now(timezone.utc).isoformat(),
                   http_status=resp.status_code, bytes=len(body),
-                  sha256=hashlib.sha256(body).hexdigest(),
-                  duration_s=round(time.monotonic() - started, 2))
+                  sha256=hashlib.sha256(body).hexdigest())
 
     if not resp.ok:
         record.update(_bronze_status="http_error", _bronze_error=f"HTTP {resp.status_code}")
@@ -141,7 +117,7 @@ def ingest(cfg, now=None, wait_s=RETRY_WAIT_S):
         resp.raise_for_status()
 
     status, error = check_xml(body)
-    # Exactly as received, no parsing or cleaning (gzip only if configured; lossless).
+    # gzip is lossless, the file still unzips to the exact response
     stored = gzip.compress(body) if compress else body
     try:
         write_snapshot(raw_file, stored)
