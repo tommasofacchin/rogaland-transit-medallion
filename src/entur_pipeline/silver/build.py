@@ -102,7 +102,7 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
 
     # One task per file group: the workers read and flatten, the driver only holds the paths
     sc = spark.sparkContext
-    slices = max(1, min(len(paths), sc.defaultParallelism))
+    slices = max(1, len(paths))
     results = sc.parallelize(paths, slices).map(read_file).persist(StorageLevel.MEMORY_AND_DISK)
 
     df = spark.createDataFrame(results.flatMap(lambda r: r[0]), INPUT_SCHEMA).cache()
