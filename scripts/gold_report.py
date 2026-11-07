@@ -22,7 +22,8 @@ QUERIES = {
                round(try_divide(sum(cancelled_calls), sum(calls)), 4) AS cancelled_share
         FROM line_hour""",
     "10 least punctual lines": f"""
-        SELECT line, sum(measured_calls) AS measured,
+        SELECT line, max(public_code) AS nr, max(line_name) AS name,
+               sum(measured_calls) AS measured,
                round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share,
                round(try_divide(sum(late_calls), sum(measured_calls)), 3) AS late_share
         FROM line_hour GROUP BY line
@@ -64,7 +65,7 @@ def main():
         if sql is None:
             print("".join((gold / "_status" / "status.jsonl").read_text().splitlines(True)[-3:]))
         else:
-            spark.sql(sql).show(24, truncate=False)
+            spark.sql(sql).show(24, truncate=40)
     spark.stop()
 
 

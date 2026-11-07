@@ -58,9 +58,18 @@ def add_shares(df):
             .withColumn("cancelled_share", F.round(F.col("cancelled_calls") / F.col("calls"), 3)))
 
 
-def by_line_hour(silver):
+def by_line_hour(silver, line_names=None):
     grouped = add_columns(silver).groupBy("service_date", "line", "hour").agg(*measures())
-    return add_shares(grouped)
+    return add_line_names(add_shares(grouped), line_names)
+
+
+def add_line_names(df, line_names):
+    """Add public_code and line_name. They stay null if a line (or the whole table) is missing."""
+    if line_names is None:
+        return (df.withColumn("public_code", F.lit(None).cast("string"))
+                .withColumn("line_name", F.lit(None).cast("string")))
+    names = line_names.select("line", "public_code", "line_name")
+    return df.join(F.broadcast(names), on="line", how="left")
 
 
 def by_stop(silver):
@@ -83,6 +92,9 @@ def check_silver(day_counts, days):
 def days_between(date_from, date_to):
     return [date_from + timedelta(days=i) for i in range((date_to - date_from).days + 1)]
 
+def read_line_names(spark, data_root):
+    path = Path(data_root) / "reference" / "line_names"
+    return spark.read.parquet(str(path)) if path.exists() else None
 
 def write_status(root, record):
     folder = root / "_status"
@@ -105,7 +117,7 @@ def build_gold(spark, cfg, date_from=None, date_to=None, run_id="local"):
         days = sorted(day_counts)
     problems = check_silver(day_counts, days) if days else ["no Silver data for these dates"]
 
-    line_hour = by_line_hour(silver).cache()
+    line_hour = by_line_hour(silver, read_line_names(spark, cfg["data_root"])).cache()
     stop = by_stop(silver).cache()
 
     # every Silver row must end up in exactly one group of each table

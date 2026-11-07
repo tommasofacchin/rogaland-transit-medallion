@@ -120,3 +120,25 @@ def test_build_gold_writes_nothing_when_silver_is_too_small(spark, tmp_path):
     assert record["status"] == "failed"
     assert not (tmp_path / "gold" / "punctuality_by_line_hour").exists()
     assert (tmp_path / "gold" / "_status" / "status.jsonl").exists()
+
+
+
+def test_line_names_are_joined(spark):
+    names = spark.createDataFrame([("KOL:Line:2_6", "6", "Sola - Stavanger")],
+                                  "line string, public_code string, line_name string")
+    r = by_line_hour(silver_of(spark, call()), names).first()
+    assert (r["public_code"], r["line_name"]) == ("6", "Sola - Stavanger")
+
+
+def test_line_without_name_still_counts(spark):
+    names = spark.createDataFrame([("KOL:Line:other", "9", "Other")],
+                                  "line string, public_code string, line_name string")
+    rows = by_line_hour(silver_of(spark, call()), names).collect()
+    assert len(rows) == 1
+    assert rows[0]["public_code"] is None
+    assert rows[0]["calls"] == 1
+
+
+def test_no_line_names_table_gives_null_columns(spark):
+    r = by_line_hour(silver_of(spark, call())).first()
+    assert r["public_code"] is None

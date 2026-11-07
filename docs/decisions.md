@@ -140,3 +140,10 @@ the old Gold stays, the step exits with an error and the run is logged as `faile
 Bronze needs exact 5 minute timing, so it stays on cron. Silver and Gold run once a day, where a
 late start does not matter, so they can run in GitHub Actions on the prod runner. That gives us
 run history, logs and a red/green status. The days before the schedule were run by hand once.
+
+## 2026-11-07 Line numbers from Entur Journey Planner (O)
+Kolumbus sends only ids like `KOL:Line:8_2043` in the SIRI feed; `PublishedLineName` is empty.
+Nobody can read that in a chart. So the step `lines` asks Entur's Journey Planner API (GraphQL)
+for every line id in Silver and saves the public number (e.g. `X39`) in `reference/line_names`.
+Gold joins it with a left join, so a line without a name still counts. The table is small
+(a few hundred rows), so Spark sends it to every task (broadcast join) instead of shuffling.

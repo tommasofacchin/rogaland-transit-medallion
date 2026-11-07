@@ -72,8 +72,9 @@ Rows whose times can't be parsed never get this far; they are only counted as
 
 ## Not in Silver yet
 
-`PublishedLineName`, `ExtraJourney`, cancellation per stop and the original UTC offset are in
-the feed but not stored. Add them if Gold needs them.
+`ExtraJourney`, cancellation per stop and the original UTC offset are in the feed but not
+stored. `PublishedLineName` is empty in the Kolumbus feed, so line numbers come from
+`reference/line_names` instead.
 
 ## Things we noticed in the raw data
 
@@ -102,7 +103,8 @@ Delay = departure delay, or arrival delay at the last stop (it has no departure)
 
 ## punctuality_by_line_hour
 One row per `service_date`, `line`, `hour`. `hour` is the hour of the planned departure in
-Norway time (Europe/Oslo), not UTC.
+Norway time (Europe/Oslo), not UTC. 
+`public_code` and `line_name` come from `reference/line_names` (null if the line was not found there).
 
 ## punctuality_by_stop
 One row per `service_date`, `stop_id`. `stop_name` is any name seen for the stop, because some
@@ -111,3 +113,17 @@ lines send no names.
 ## _status/status.jsonl
 One JSON line per Gold run: run_id, run_time, dates, status (`ok`/`failed`), problems and row
 counts. Gold is only written when status is `ok`.
+
+# Reference (`reference/`)
+
+## line_names
+Built by `reference/lines.py` (step `lines`) from Entur's Journey Planner API, for every line id
+in Silver. Overwritten on every run.
+
+| Column | Meaning |
+|---|---|
+| line | line id, same as in Silver, e.g. `KOL:Line:8_2043` |
+| public_code | the number on the bus, e.g. `X39` |
+| line_name | name from Journey Planner (often the same as public_code) |
+| transport_mode | `bus`, `water`, ... |
+| fetched_at | when we asked the API (UTC) |

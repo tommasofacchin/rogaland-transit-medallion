@@ -9,7 +9,7 @@ from datetime import date
 from entur_pipeline.bronze.ingest import ingest
 from entur_pipeline.config import load_config
 
-STEPS = ["bronze", "silver", "gold"]
+STEPS = ["bronze", "silver", "lines", "gold"]
 
 
 def start_spark(name):
@@ -48,6 +48,15 @@ def main(argv=None):
         spark = start_spark("entur-silver")
         try:
             result = build_silver(spark, cfg, args.date_from, args.date_to, run_id=run_id)
+        finally:
+            spark.stop()
+        print(json.dumps(result, indent=2))
+    elif args.step == "lines":
+        from entur_pipeline.reference.lines import build_line_names
+
+        spark = start_spark("entur-lines")
+        try:
+            result = build_line_names(spark, cfg)
         finally:
             spark.stop()
         print(json.dumps(result, indent=2))
