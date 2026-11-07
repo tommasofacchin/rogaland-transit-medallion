@@ -18,30 +18,30 @@ QUERIES = {
     "Whole period": """
         SELECT min(service_date) AS first_day, max(service_date) AS last_day,
                sum(calls) AS calls, sum(measured_calls) AS measured,
-               round(sum(on_time_calls) / sum(measured_calls), 3) AS on_time_share,
-               round(sum(cancelled_calls) / sum(calls), 4) AS cancelled_share
+               round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share,
+               round(try_divide(sum(cancelled_calls), sum(calls)), 4) AS cancelled_share
         FROM line_hour""",
     "10 least punctual lines": f"""
         SELECT line, sum(measured_calls) AS measured,
-               round(sum(on_time_calls) / sum(measured_calls), 3) AS on_time_share,
-               round(sum(late_calls) / sum(measured_calls), 3) AS late_share
+               round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share,
+               round(try_divide(sum(late_calls), sum(measured_calls)), 3) AS late_share
         FROM line_hour GROUP BY line
         HAVING sum(measured_calls) >= {MIN_LINE_CALLS}
         ORDER BY on_time_share LIMIT 10""",
     "On time share per hour (Norway time), weekdays only": """
         SELECT hour, sum(measured_calls) AS measured,
-               round(sum(on_time_calls) / sum(measured_calls), 3) AS on_time_share
+               round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share
         FROM line_hour WHERE dayofweek(service_date) BETWEEN 2 AND 6
         GROUP BY hour ORDER BY hour""",
     "Weekday vs weekend": """
         SELECT CASE WHEN dayofweek(service_date) IN (1, 7) THEN 'weekend' ELSE 'weekday' END
                    AS day_type,
                sum(measured_calls) AS measured,
-               round(sum(on_time_calls) / sum(measured_calls), 3) AS on_time_share
+               round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share
         FROM line_hour GROUP BY 1 ORDER BY 1""",
     "10 least punctual stops": f"""
         SELECT stop_id, max(stop_name) AS stop_name, sum(measured_calls) AS measured,
-               round(sum(on_time_calls) / sum(measured_calls), 3) AS on_time_share
+               round(try_divide(sum(on_time_calls), sum(measured_calls)), 3) AS on_time_share
         FROM stop GROUP BY stop_id
         HAVING sum(measured_calls) >= {MIN_STOP_CALLS}
         ORDER BY on_time_share LIMIT 10""",
