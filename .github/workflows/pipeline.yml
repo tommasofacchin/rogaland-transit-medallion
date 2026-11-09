@@ -1,0 +1,36 @@
+name: Daily pipeline
+
+# Every night: Silver for yesterday (UTC), then line names, then Gold for the same day.
+# Runs on the prod VM. If the Gold check fails, run_pipeline.py exits with 1 and the run is red.
+# Bronze is not here: it runs from cron every 5 minutes (see scripts/run_bronze_cron.sh).
+on:
+  schedule:
+    - cron: "0 4 * * *"   # 04:00 UTC; GitHub may start it a few minutes late
+  workflow_dispatch:
+    inputs:
+      day:
+        description: "Day to process, YYYY-MM-DD (empty = yesterday UTC)"
+        required: false
+
+# Never overlap two runs; a late run waits instead of being cancelled.
+concurrency:
+  group: daily-pipeline
+  cancel-in-progress: false
+
+jobs:
+  daily:
+    runs-on: [self-hosted, prod]
+    environment: prod
+    steps:
+      - name: Silver, lines, Gold
+        env:
+          INPUT_DAY: ${{ inputs.day }}
+        run: |
+          set -euo pipefail
+          cd ~/app
+          DAY="${INPUT_DAY:-$(date -u -d yesterday +%F)}"
+          echo "Processing $DAY"
+          PY=~/venv/bin/python
+          $PY jobs/run_pipeline.py silver --config config/prod.yaml --from "$DAY" --to "$DAY"
+          $PY jobs/run_pipeline.py lines  --config config/prod.yaml
+          $PY jobs/run_pipeline.py gold   --config config/prod.yaml --from "$DAY" --to "$DAY"
