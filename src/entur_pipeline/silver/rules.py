@@ -10,7 +10,7 @@ MISSING_LINE_OR_STOP = "MISSING_LINE_OR_STOP"
 MISSING_AIMED_TIME = "MISSING_AIMED_TIME"
 REJECT_CODES = [MISSING_KEY, MISSING_LINE_OR_STOP, MISSING_AIMED_TIME]
 
-# first guess, check again when we have a week of Silver data
+# checked on 11 days of prod data (27 Oct - 6 Nov): 99.8% of stops are between -5 and 60 min
 MIN_DELAY_S = -10 * 60
 MAX_DELAY_S = 3 * 60 * 60
 
