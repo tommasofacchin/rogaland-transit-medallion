@@ -100,7 +100,8 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     read_to = date_to + timedelta(days=1) if date_to else None
     paths = [str(p) for p in list_bronze_files(cfg["data_root"], read_from, read_to)]
 
-    # One task per file group: the workers read and flatten, the driver only holds the paths
+    # One task per file, so a task only holds one snapshot in memory
+    # (with 4 big groups one day did not fit in memory on prod)
     sc = spark.sparkContext
     slices = max(1, len(paths))
     results = sc.parallelize(paths, slices).map(read_file).persist(StorageLevel.MEMORY_AND_DISK)
