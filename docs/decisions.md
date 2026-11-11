@@ -161,12 +161,15 @@ A stop that never became a RecordedCall keeps its predicted (Expected) time and 
 as measured. On 10 Nov that was 1,014 of 153,724 measured stops (0.66%, at most 4.7% just
 after midnight). Leaving them out changes the on-time share by about 0.05 points, so Gold
 keeps them. Silver now counts them every run as `measured_estimated_only`.
+It uses the same "measured" test as Gold (not excluded and a delay exists), so the numbers match.
 
 ## 2026-11-11 Line names are only fetched for new lines (O)
 At first the `lines` step asked Journey Planner about every line each night and overwrote
 the table. That needs an outside API every night for names that hardly ever change, and a
 line that stops running would lose its name in old Gold rows. Now the step keeps the old rows
 and only asks about line ids that are new in Silver. Most nights it makes no API call.
+An id that Journey Planner does not know is saved with empty names, so it is not asked again
+every night (Gold shows the raw id for it, as before).
 
 ## 2026-11-11 Run summary, Bronze check and dev runs in the daily pipeline (O)
 The nightly run was green or red, but the numbers were only in files on the VM. Now the
@@ -178,3 +181,8 @@ UTC: the first scheduled runs started about 7.5 hours late, and GitHub delays ru
 full hour the most. Started by hand, the workflow can also run on the dev VM (`target: dev`)
 with `config/dev.yaml` and the dev test data, so a change can be tried on dev before prod.
 `test-runner.yml` was only a first runner test and is removed.
+
+## 2026-11-11 Too many unreadable Bronze files stop Silver (O)
+Skipping a broken file is fine, but if a bug in our code makes every file fail, Silver would
+overwrite a good day with a partial one. So if more than 5% of the files cannot be read, Silver
+stops before writing anything and the run is red. The first skipped files are always printed.

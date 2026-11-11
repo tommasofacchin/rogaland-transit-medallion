@@ -1,8 +1,18 @@
+import gzip
 import shutil
 from datetime import date
 from pathlib import Path
 
-from entur_pipeline.silver.build import list_bronze_files, read_rows, run_id_from_path
+import pytest
+
+from entur_pipeline.silver import build
+from entur_pipeline.silver.build import (
+    check_skipped,
+    list_bronze_files,
+    read_file,
+    read_rows,
+    run_id_from_path,
+)
 
 FIXTURE = Path(__file__).parent / "fixtures" / "siri_sample.xml"
 
@@ -174,3 +184,32 @@ def test_partial_rerun_keeps_night_trips(spark, tmp_path):
     build_silver(spark, cfg, date(2026, 10, 27), date(2026, 10, 27), run_id="r3")
     rows = spark.read.parquet(str(tmp_path / "silver" / "stop_calls")).collect()
     assert sorted(r.journey_id for r in rows) == ["DAY", "NIGHT"]
+
+
+# unreadable files
+
+def test_broken_gzip_is_skipped(tmp_path):
+    path = tmp_path / "entur_siri_20261027T130002Z_a-1.xml.gz"
+    path.write_bytes(gzip.compress(FIXTURE.read_bytes())[:200])  # cut in the middle
+    rows, skipped, dropped = read_file(str(path))
+    assert rows == [] and skipped[0] == str(path) and dropped == 0
+
+
+def test_check_skipped_allows_a_few_and_stops_many():
+    check_skipped([], 10)
+    check_skipped([("a", "err")], 100, max_share=0.05)
+    with pytest.raises(RuntimeError, match="2 of 10"):
+        check_skipped([("a", "err"), ("b", "err")], 10, max_share=0.05)
+
+
+def test_too_many_skipped_files_write_nothing(spark, tmp_path, monkeypatch):
+    folder = tmp_path / "bronze" / "entur_siri" / "dt=2026-10-27" / "hour=13"
+    folder.mkdir(parents=True)
+    shutil.copy(FIXTURE, folder / "entur_siri_20261027T130002Z_a-1.xml")
+    (folder / "entur_siri_20261027T130502Z_b-1.xml.gz").write_bytes(b"not gzip")
+    monkeypatch.setattr(build, "MAX_SKIPPED_SHARE", 0.25)  # 1 of 2 is too many
+
+    with pytest.raises(RuntimeError, match="1 of 2"):
+        build.build_silver(spark, {"data_root": str(tmp_path)}, run_id="r1")
+    assert not (tmp_path / "silver" / "stop_calls").exists()
+    assert not (tmp_path / "silver" / "quality").exists()
