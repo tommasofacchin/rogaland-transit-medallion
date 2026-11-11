@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from silver_rows import call, df_of
 
@@ -34,6 +34,9 @@ def test_metrics_and_long_format(spark):
     assert m["flagged_exclude_from_punctuality"] == 1
     assert m["schema_ok"] == 1 and m["rows_unparseable"] == 2
 
-    out = quality.quality_rows(spark, "local-1", m)
+    day = date(2026, 10, 27)
+    out = quality.quality_rows(spark, "local-1", m, date_from=day, date_to=day)
     assert out.schema == quality.QUALITY_SCHEMA
-    assert {r.metric: r.value for r in out.collect()}["rows_silver"] == 2
+    rows = out.collect()
+    assert {r.metric: r.value for r in rows}["rows_silver"] == 2
+    assert all(r.date_from == day and r.date_to == day for r in rows)

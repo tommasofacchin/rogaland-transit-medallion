@@ -1,11 +1,18 @@
-"""Quality metrics for one Silver run, saved as rows: run_id | run_time | metric | value.
+"""Quality metrics for one Silver run, saved as rows: run_id | run_time | date_from | date_to | metric | value.
 
 One row per metric, so adding a metric later does not change the table.
 """
 from datetime import datetime, timezone
 
 from pyspark.sql import functions as F
-from pyspark.sql.types import DoubleType, StringType, StructField, StructType, TimestampType
+from pyspark.sql.types import (
+    DateType,
+    DoubleType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 from entur_pipeline.silver.dedup import KEY
 from entur_pipeline.silver.rules import FLAGS, REJECT_CODES
@@ -14,6 +21,8 @@ from entur_pipeline.silver.schema import STOP_CALLS_SCHEMA
 QUALITY_SCHEMA = StructType([
     StructField("run_id", StringType()),
     StructField("run_time", TimestampType()),
+    StructField("date_from", DateType()),  # service dates of the run
+    StructField("date_to", DateType()),
     StructField("metric", StringType()),
     StructField("value", DoubleType()),
 ])
@@ -60,8 +69,9 @@ def collect_metrics(clean, rejected, silver, unparseable=0):
     return m
 
 
-def quality_rows(spark, run_id, metrics, run_time=None):
+def quality_rows(spark, run_id, metrics, run_time=None, date_from=None, date_to=None):
     """Turn the metrics dict into a DataFrame that can be appended to silver/quality."""
     run_time = run_time or datetime.now(timezone.utc)
-    rows = [(run_id, run_time, name, float(value)) for name, value in sorted(metrics.items())]
+    rows = [(run_id, run_time, date_from, date_to, name, float(value))
+            for name, value in sorted(metrics.items())]
     return spark.createDataFrame(rows, QUALITY_SCHEMA)

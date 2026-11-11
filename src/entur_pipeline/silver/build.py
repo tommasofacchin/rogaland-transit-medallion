@@ -124,7 +124,8 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     metrics = collect_metrics(clean, rejected, silver, unparseable=unparseable)
     metrics["files_read"] = len(paths) - len(skipped)
     metrics["files_skipped"] = len(skipped)
-    quality_rows(spark, run_id, metrics).write.mode("append").parquet(str(root / "quality"))
+    (quality_rows(spark, run_id, metrics, date_from=date_from, date_to=date_to)
+     .write.mode("append").parquet(str(root / "quality")))
 
     results.unpersist()
     df.unpersist()
