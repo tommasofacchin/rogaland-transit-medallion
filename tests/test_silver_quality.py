@@ -40,10 +40,19 @@ def test_metrics_and_long_format(spark):
     assert out.schema == quality.QUALITY_SCHEMA
     rows = out.collect()
     assert {r.metric: r.value for r in rows}["rows_silver"] == 2
-    assert all(r.date_from == day and r.date_to == day for r in rows)    
+    assert all(r.date_from == day and r.date_to == day for r in rows)
+
 
 def test_estimated_only_count(spark):
     df = df_of(spark, call(), call(stop_order=3, call_status="estimated"))
     clean, rejected = rules.apply_rules(df)
     m = quality.collect_metrics(clean, rejected, dedup_stop_calls(clean))
     assert m["measured_estimated_only"] == 1
+
+
+def test_estimated_without_delay_is_not_counted(spark):
+    # not excluded (it has an expected time) but Gold has no delay for it, so not measured
+    df = df_of(spark, call(), call(stop_order=3, call_status="estimated", arrival_delay_s=None))
+    clean, rejected = rules.apply_rules(df)
+    m = quality.collect_metrics(clean, rejected, dedup_stop_calls(clean))
+    assert m["measured_estimated_only"] == 0
