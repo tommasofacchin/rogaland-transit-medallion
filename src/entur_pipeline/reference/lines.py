@@ -2,7 +2,8 @@
 
 Kolumbus only sends ids like KOL:Line:8_2043 in the SIRI feed (PublishedLineName is empty),
 so we ask Entur's Journey Planner API for the names and save them as a small table that Gold
-joins. The table is rebuilt on every run, so new lines get a name too.
+joins. Names hardly ever change, so we only ask about line ids that are not in the table yet and keep
+the old rows. A line that stops running keeps its name, and most nights need no API call.
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -43,14 +44,28 @@ def to_rows(lines, fetched_at):
              fetched_at) for line in lines]
 
 
-def build_line_names(spark, cfg):
-    """Fetch names for all lines in Silver and overwrite reference/line_names."""
-    root = Path(cfg["data_root"])
-    silver = spark.read.parquet(str(root / "silver" / "stop_calls"))
-    ids = sorted(r["line"] for r in silver.select("line").distinct().collect() if r["line"])
+def new_line_ids(silver_ids, known_ids):
+    """Line ids from Silver that have no name in the table yet."""
+    return sorted(set(silver_ids) - set(known_ids))
 
-    lines = fetch_lines(ids, cfg["entur"]["client_name"])
-    rows = to_rows(lines, datetime.now(timezone.utc))
-    df = spark.createDataFrame(rows, LINE_NAMES_SCHEMA)
-    df.write.mode("overwrite").parquet(str(root / "reference" / "line_names"))
-    return {"line_ids": len(ids), "found": len(lines), "missing": len(ids) - len(lines)}
+
+def build_line_names(spark, cfg):
+    """Fetch names for lines that are new in Silver and add them to reference/line_names."""
+    root = Path(cfg["data_root"])
+    path = root / "reference" / "line_names"
+    silver = spark.read.parquet(str(root / "silver" / "stop_calls"))
+    ids = [r["line"] for r in silver.select("line").distinct().collect() if r["line"]]
+
+    # small table: read it into Python, Spark can't overwrite a folder it is still reading
+    old = []
+    if path.exists():
+        table = spark.read.parquet(str(path)).select(*LINE_NAMES_SCHEMA.names)
+        old = [tuple(r) for r in table.collect()]
+    todo = new_line_ids(ids, [r[0] for r in old])
+
+    found = fetch_lines(todo, cfg["entur"]["client_name"]) if todo else []
+    if found:
+        rows = old + to_rows(found, datetime.now(timezone.utc))
+        df = spark.createDataFrame(rows, LINE_NAMES_SCHEMA)
+        df.write.mode("overwrite").parquet(str(path))
+    return {"line_ids": len(ids), "known": len(old), "asked": len(todo), "found": len(found)}
