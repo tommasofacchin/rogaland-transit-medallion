@@ -9,6 +9,7 @@ D-1, because dt= is a UTC day). So we read one extra Bronze day on each side of 
 only write the service dates inside the range.
 """
 import xml.etree.ElementTree as ET
+import zlib
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -56,7 +57,7 @@ def read_file(path):
     """
     try:
         flat = flatten_snapshot(path, run_id_from_path(path))
-    except (ET.ParseError, EOFError, OSError) as exc:
+    except (ET.ParseError, EOFError, OSError, ValueError, zlib.error) as exc:
         return [], (str(path), repr(exc)), 0
     rows, dropped = [], 0
     for raw in flat:
@@ -124,7 +125,8 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     metrics = collect_metrics(clean, rejected, silver, unparseable=unparseable)
     metrics["files_read"] = len(paths) - len(skipped)
     metrics["files_skipped"] = len(skipped)
-    quality_rows(spark, run_id, metrics).write.mode("append").parquet(str(root / "quality"))
+    (quality_rows(spark, run_id, metrics, date_from=date_from, date_to=date_to)
+     .write.mode("append").parquet(str(root / "quality")))
 
     results.unpersist()
     df.unpersist()

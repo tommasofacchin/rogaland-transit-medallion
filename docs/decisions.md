@@ -147,3 +147,23 @@ Nobody can read that in a chart. So the step `lines` asks Entur's Journey Planne
 for every line id in Silver and saves the public number (e.g. `X39`) in `reference/line_names`.
 Gold joins it with a left join, so a line without a name still counts. The table is small
 (a few hundred rows), so Spark sends it to every task (broadcast join) instead of shuffling.
+
+## 2026-11-11 Quality rows know their day (O)
+The quality table only had `run_id` and `run_time`, and all hand runs were called `local`,
+so we could not say which day a row was for. Now every row has `date_from` and `date_to`
+(the service dates of the run). Old rows have no dates; read the table with `mergeSchema`
+(`scripts/show_quality.py` does this).
+A Bronze file that cannot be read (bad number, broken gzip) is now skipped and counted
+instead of stopping the whole Silver run.
+
+## 2026-11-11 Predicted stops stay in Gold (O)
+A stop that never became a RecordedCall keeps its predicted (Expected) time and is counted
+as measured. On 10 Nov that was 1,014 of 153,724 measured stops (0.66%, at most 4.7% just
+after midnight). Leaving them out changes the on-time share by about 0.05 points, so Gold
+keeps them. Silver now counts them every run as `measured_estimated_only`.
+
+## 2026-11-11 Line names are only fetched for new lines (O)
+At first the `lines` step asked Journey Planner about every line each night and overwrote
+the table. That needs an outside API every night for names that hardly ever change, and a
+line that stops running would lose its name in old Gold rows. Now the step keeps the old rows
+and only asks about line ids that are new in Silver. Most nights it makes no API call.
