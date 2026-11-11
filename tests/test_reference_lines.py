@@ -49,6 +49,7 @@ def test_to_rows():
     line = {"id": "KOL:Line:2_6", "publicCode": "6", "name": "Sola", "transportMode": "bus"}
     assert to_rows([line], t) == [("KOL:Line:2_6", "6", "Sola", "bus", t)]
 
+
 def test_new_line_ids():
     assert new_line_ids(["L2", "L1", "L3"], ["L1"]) == ["L2", "L3"]
     assert new_line_ids(["L1"], ["L1", "L9"]) == []
@@ -73,6 +74,29 @@ def test_build_line_names_keeps_old_names_and_asks_only_for_new(spark, tmp_path,
     result = lines.build_line_names(spark, cfg)
 
     assert asked == [["L1", "L2"], ["L3"]]
-    assert result == {"line_ids": 2, "known": 2, "asked": 1, "found": 1}
+    assert result == {"line_ids": 2, "known": 2, "asked": 1, "found": 1, "unknown": 0}
     saved = spark.read.parquet(str(tmp_path / "reference" / "line_names"))
     assert sorted(r.line for r in saved.collect()) == ["L1", "L2", "L3"]
+
+
+def test_build_line_names_saves_unknown_ids_and_asks_only_once(spark, tmp_path, monkeypatch):
+    asked = []
+
+    def fake_fetch(ids, client_name):
+        asked.append(list(ids))
+        return [{"id": i, "publicCode": "1", "name": "x", "transportMode": "bus"}
+                for i in ids if i != "L9"]  # Journey Planner does not know L9
+
+    monkeypatch.setattr(lines, "fetch_lines", fake_fetch)
+    cfg = {"data_root": str(tmp_path), "entur": {"client_name": "test"}}
+    spark.createDataFrame([("L1",), ("L9",)], ["line"]).write.parquet(
+        str(tmp_path / "silver" / "stop_calls"))
+
+    first = lines.build_line_names(spark, cfg)
+    second = lines.build_line_names(spark, cfg)
+
+    assert asked == [["L1", "L9"]]
+    assert first["unknown"] == 1 and second["asked"] == 0
+    saved = spark.read.parquet(str(tmp_path / "reference" / "line_names"))
+    l9 = [r for r in saved.collect() if r.line == "L9"][0]
+    assert l9.public_code is None and l9.line_name is None
