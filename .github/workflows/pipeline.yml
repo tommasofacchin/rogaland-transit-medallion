@@ -2,35 +2,53 @@ name: Daily pipeline
 
 # Every night: Silver for yesterday (UTC), then line names, then Gold for the same day.
 # Runs on the prod VM. If the Gold check fails, run_pipeline.py exits with 1 and the run is red.
+# Started by hand it can also run on dev (target: dev), with config/dev.yaml and the dev data.
 # Bronze is not here: it runs from cron every 5 minutes (see scripts/run_bronze_cron.sh).
 on:
   schedule:
-    - cron: "0 4 * * *"   # 04:00 UTC; GitHub may start it a few minutes late
+    - cron: "17 3 * * *"   # 03:17 UTC; not on the full hour, GitHub delays those the most
   workflow_dispatch:
     inputs:
       day:
         description: "Day to process, YYYY-MM-DD (empty = yesterday UTC)"
         required: false
+      target:
+        description: "VM to run on"
+        type: choice
+        options: [prod, dev]
+        default: prod
 
-# Never overlap two runs; a late run waits instead of being cancelled.
+# Never overlap two runs on the same VM; a late run waits instead of being cancelled.
 concurrency:
-  group: daily-pipeline
+  group: daily-pipeline-${{ inputs.target || 'prod' }}
   cancel-in-progress: false
 
 jobs:
   daily:
-    runs-on: [self-hosted, prod]
-    environment: prod
+    runs-on: [self-hosted, "${{ inputs.target || 'prod' }}"]   # the schedule has no inputs, so prod
+    environment: ${{ inputs.target || 'prod' }}
     steps:
       - name: Silver, lines, Gold
         env:
           INPUT_DAY: ${{ inputs.day }}
+          CONFIG: config/${{ inputs.target || 'prod' }}.yaml
         run: |
           set -euo pipefail
           cd ~/app
           DAY="${INPUT_DAY:-$(date -u -d yesterday +%F)}"
+          echo "DAY=$DAY" >> "$GITHUB_ENV"   # for the summary step
           echo "Processing $DAY"
           PY=~/venv/bin/python
-          $PY jobs/run_pipeline.py silver --config config/prod.yaml --from "$DAY" --to "$DAY"
-          $PY jobs/run_pipeline.py lines  --config config/prod.yaml
-          $PY jobs/run_pipeline.py gold   --config config/prod.yaml --from "$DAY" --to "$DAY"
+          $PY jobs/run_pipeline.py silver --config "$CONFIG" --from "$DAY" --to "$DAY"
+          # Gold works with the old names, so an Entur API problem only gives a warning
+          $PY jobs/run_pipeline.py lines  --config "$CONFIG" || echo "::warning::line names not updated"
+          $PY jobs/run_pipeline.py gold   --config "$CONFIG" --from "$DAY" --to "$DAY"
+
+      - name: Summary
+        if: always()   # also after a failed step, so the page shows what happened
+        env:
+          CONFIG: config/${{ inputs.target || 'prod' }}.yaml
+        run: |
+          cd ~/app
+          ~/venv/bin/python scripts/run_summary.py --config "$CONFIG" --day "$DAY" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
