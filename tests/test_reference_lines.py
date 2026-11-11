@@ -98,5 +98,5 @@ def test_build_line_names_saves_unknown_ids_and_asks_only_once(spark, tmp_path, 
     assert asked == [["L1", "L9"]]
     assert first["unknown"] == 1 and second["asked"] == 0
     saved = spark.read.parquet(str(tmp_path / "reference" / "line_names"))
-    l9 = [r for r in saved.collect() if r.line == "L9"][0]
+    l9 = next(r for r in saved.collect() if r.line == "L9")
     assert l9.public_code is None and l9.line_name is None
