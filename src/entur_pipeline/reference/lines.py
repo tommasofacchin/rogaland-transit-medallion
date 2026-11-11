@@ -4,6 +4,7 @@ Kolumbus only sends ids like KOL:Line:8_2043 in the SIRI feed (PublishedLineName
 so we ask Entur's Journey Planner API for the names and save them as a small table that Gold
 joins. Names hardly ever change, so we only ask about line ids that are not in the table yet and keep
 the old rows. A line that stops running keeps its name, and most nights need no API call.
+Ids that Journey Planner does not know are saved too, with empty names, so we ask only once.
 """
 from datetime import datetime, timezone
 from pathlib import Path
@@ -64,8 +65,12 @@ def build_line_names(spark, cfg):
     todo = new_line_ids(ids, [r[0] for r in old])
 
     found = fetch_lines(todo, cfg["entur"]["client_name"]) if todo else []
-    if found:
-        rows = old + to_rows(found, datetime.now(timezone.utc))
+    if todo:
+        now = datetime.now(timezone.utc)
+        found_ids = {line["id"] for line in found}
+        unknown = [(i, None, None, None, now) for i in todo if i not in found_ids]
+        rows = old + to_rows(found, now) + unknown
         df = spark.createDataFrame(rows, LINE_NAMES_SCHEMA)
         df.write.mode("overwrite").parquet(str(path))
-    return {"line_ids": len(ids), "known": len(old), "asked": len(todo), "found": len(found)}
+    return {"line_ids": len(ids), "known": len(old), "asked": len(todo), "found": len(found),
+            "unknown": len(todo) - len(found)}

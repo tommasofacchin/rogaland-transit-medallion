@@ -25,6 +25,9 @@ from entur_pipeline.silver.schema import STOP_CALLS_SCHEMA
 from entur_pipeline.silver.standardize import standardize_row
 
 REQUIRED = ["call_status", "snapshot_time"]
+# More skipped files than this share stops the run before anything is written: a few broken
+# files are normal, many usually mean a bug in our code (a day reads ~864 files).
+MAX_SKIPPED_SHARE = 0.05
 
 # Same columns as STOP_CALLS_SCHEMA but all nullable, so a row with a missing key
 # gets to the rules and is rejected with a reason instead of crashing createDataFrame.
@@ -94,6 +97,20 @@ def in_range(df, date_from=None, date_to=None):
     return df
 
 
+def check_skipped(skipped, n_files, max_share=None):
+    """Print the first skipped files; raise if too many were skipped to trust the run."""
+    if not skipped:
+        return
+    max_share = MAX_SKIPPED_SHARE if max_share is None else max_share
+    print(f"skipped {len(skipped)} of {n_files} Bronze files, first ones:")
+    for path, reason in skipped[:5]:
+        print(f"  {path}: {reason}")
+    if len(skipped) > max_share * n_files:
+        raise RuntimeError(
+            f"{len(skipped)} of {n_files} Bronze files could not be read "
+            f"(limit {max_share:.0%}), nothing was written. First: {skipped[0]}")
+
+
 def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     """Build `stop_calls` for the given service dates. Returns the run's metrics as a dict."""
     # one extra Bronze day on each side, so night trips are complete
@@ -113,6 +130,9 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     rejected = in_range(rejected, date_from, date_to)
     silver = dedup_stop_calls(clean).cache()
 
+    skipped = results.filter(lambda r: r[1] is not None).map(lambda r: r[1]).collect()
+    check_skipped(skipped, len(paths))
+
     # Overwrite only the service dates present in this run, not the whole table
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
     root = Path(cfg["data_root"]) / "silver"
@@ -120,7 +140,6 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
     (rejected.write.mode("overwrite").partitionBy("service_date")
      .parquet(str(root / "rejected_calls")))
 
-    skipped = results.filter(lambda r: r[1] is not None).map(lambda r: r[1]).collect()
     unparseable = results.map(lambda r: r[2]).sum()
     metrics = collect_metrics(clean, rejected, silver, unparseable=unparseable)
     metrics["files_read"] = len(paths) - len(skipped)

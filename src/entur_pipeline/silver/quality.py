@@ -62,9 +62,12 @@ def collect_metrics(clean, rejected, silver, unparseable=0):
     row = silver.agg(F.count("*").alias("rows_silver"), *flag_sums, *null_sums).first()
     for name, value in row.asDict().items():
         m[name] = value or 0
-    # measured stops that only have a predicted time (never became a RecordedCall)
+    # measured stops that only have a predicted time (never became a RecordedCall).
+    # "measured" is the same test as in gold/build.py, so the numbers match Gold.
+    delay = F.coalesce("departure_delay_s", "arrival_delay_s")
+    measured = ~F.col("exclude_from_punctuality") & delay.isNotNull()
     m["measured_estimated_only"] = silver.filter(
-        ~F.col("exclude_from_punctuality") & (F.col("call_status") == "estimated")).count()
+        measured & (F.col("call_status") == "estimated")).count()
 
     m["duplicate_keys_before_dedup"] = duplicate_keys(clean)
     m["duplicate_keys_after_dedup"] = duplicate_keys(silver)
