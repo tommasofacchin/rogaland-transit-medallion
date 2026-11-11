@@ -167,3 +167,14 @@ At first the `lines` step asked Journey Planner about every line each night and 
 the table. That needs an outside API every night for names that hardly ever change, and a
 line that stops running would lose its name in old Gold rows. Now the step keeps the old rows
 and only asks about line ids that are new in Silver. Most nights it makes no API call.
+
+## 2026-11-11 Run summary, Bronze check and dev runs in the daily pipeline (O)
+The nightly run was green or red, but the numbers were only in files on the VM. Now the
+last step writes a summary to the run page: Bronze runs that day, Silver rows and the Gold
+status. With fewer than 270 of 288 valid Bronze snapshots the run turns red on prod, because
+Gold's 20k row check would let a half day through. The `lines` step only gives a warning when
+Entur's API fails, since Gold can use the old names. The schedule moved from 04:00 to 03:17
+UTC: the first scheduled runs started about 7.5 hours late, and GitHub delays runs on the
+full hour the most. Started by hand, the workflow can also run on the dev VM (`target: dev`)
+with `config/dev.yaml` and the dev test data, so a change can be tried on dev before prod.
+`test-runner.yml` was only a first runner test and is removed.
