@@ -62,6 +62,9 @@ def collect_metrics(clean, rejected, silver, unparseable=0):
     row = silver.agg(F.count("*").alias("rows_silver"), *flag_sums, *null_sums).first()
     for name, value in row.asDict().items():
         m[name] = value or 0
+    # measured stops that only have a predicted time (never became a RecordedCall)
+    m["measured_estimated_only"] = silver.filter(
+        ~F.col("exclude_from_punctuality") & (F.col("call_status") == "estimated")).count()
 
     m["duplicate_keys_before_dedup"] = duplicate_keys(clean)
     m["duplicate_keys_after_dedup"] = duplicate_keys(silver)
