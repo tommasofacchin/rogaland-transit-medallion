@@ -186,3 +186,17 @@ with `config/dev.yaml` and the dev test data, so a change can be tried on dev be
 Skipping a broken file is fine, but if a bug in our code makes every file fail, Silver would
 overwrite a good day with a partial one. So if more than 5% of the files cannot be read, Silver
 stops before writing anything and the run is red. The first skipped files are always printed.
+
+## 2026-11-12 Spark settings measured on prod (O)
+We timed Silver and Gold for one day (4 Nov) with different settings and read the stage times
+from the Spark event logs. The baseline ran twice (310 s and 313 s, so about 3 s is noise).
+- Shuffle partitions 200 -> 8: Gold 28 s -> 17 s, and 1,639 -> 91 tasks. Gold groups only
+  ~150k rows a day, so 200 tasks were mostly overhead. AQE did not merge them (same task count
+  with AQE on or off). We now set `spark.sql.shuffle.partitions` to 8 in `start_spark`.
+- Silver did not change (299-314 s with every setting). The dedup shuffle takes 3-8 s. The time
+  is Python: parsing the 864 files (~137 s), turning the rows into a DataFrame (~100 s) and a
+  second pass that counts unparseable times (~27 s).
+- Silver for 1, 2 and 3 service days took 308, 408 and 516 s, about 100 s for every Bronze
+  day it reads. The extra day on each side is about two thirds of a nightly run.
+Not changed before the presentation. Future work: parse each Bronze file once and keep the
+result, and count unparseable times in the same pass. Event logs are in ~/spark-events on prod.
