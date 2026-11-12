@@ -11,7 +11,7 @@ dependencies = ["requests", "pyyaml"]
 
 [project.optional-dependencies]
 spark = ["pyspark==4.1.3"]
-dev = ["pytest", "ruff"]
+dev = ["pytest", "ruff", "matplotlib"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
