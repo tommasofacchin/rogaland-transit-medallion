@@ -2,51 +2,157 @@
 
 How punctual are the buses in Rogaland? Entur only shows what is happening *right now*, so we collect the live feed ourselves and build up a history we can actually analyse.
 
-This is our project for DAT535 (Data Engineering) at UiS, by **Tommaso Facchin** and **Oliwier Trawinski**.
+This is our project for DAT535 (Data Engineering) at UiS, by **Tommaso Facchin** and **Oliwier Trawinski** (group 5).
 
 ## The idea
 
 Entur publishes real-time departures as SIRI XML. Every snapshot is a messy pile of nested trips, and the same trip shows up again and again with slightly updated times. There's no history, so you can't ask "which lines are usually late, and when?".
 
-So the plan is:
+So we:
 
-1. Poll the Entur API on a schedule and keep every raw response.
+1. Poll the Entur API every 5 minutes and keep every raw response.
 2. Clean it up into one row per stop of each trip.
-3. Aggregate it into punctuality numbers per line, stop and hour.
+3. Aggregate it into punctuality numbers per line, hour and stop.
 
 We use the medallion setup for this:
 
 | Layer | What it holds |
 |---|---|
-| **Bronze** | Raw XML responses, untouched, with a bit of metadata (when, which run, which endpoint) |
-| **Silver** | Parsed, deduplicated, validated stop calls. This is where most of the work is |
-| **Gold** | Small tables with punctuality and average delay, ready for a chart or a query |
+| **Bronze** | Raw XML responses (gzipped), untouched, plus one metadata line per run |
+| **Silver** | Parsed, validated and deduplicated stop calls, plus rejected rows and a quality table. This is where most of the work is |
+| **Gold** | Two small tables with punctuality and delay per line/hour and per stop |
 
-Processing is done with PySpark, and GitHub Actions handles testing, deployment and the schedule.
+Processing is done with PySpark. GitHub Actions runs the tests, deploys the code and runs Silver and Gold every night.
 
-## Status
+## Repo layout
 
-Bronze is done and collecting: a cron job on the prod VM fetches a snapshot every 5 minutes into `/data/entur` (see [scripts/run_bronze_cron.sh](scripts/run_bronze_cron.sh)). GitHub Actions deploys the code to the VMs on every push to `main` and `dev`; the Bronze workflow can be triggered manually but has no schedule, because GitHub's scheduled runs are unreliable at this frequency.
-Silver and Gold run with `python jobs/run_pipeline.py silver|gold --config config/prod.yaml --from YYYY-MM-DD --to YYYY-MM-DD`, and `scripts/gold_report.py` prints the main results.
+```
+config/          dev.yaml and prod.yaml (where the data goes, Entur settings)
+jobs/            run_pipeline.py (one entry point for every step), bronze_summary.py
+src/entur_pipeline/
+  bronze/        fetch one snapshot and write it
+  silver/        schema, flatten, standardize, rules, dedup, quality, build
+  reference/     line numbers from Entur Journey Planner
+  gold/          the two Gold tables
+scripts/         cron wrapper, reports, charts, small checks
+tests/           pytest, runs on a local Spark
+docs/            plan, decisions, data dictionary
+```
 
-- [docs/plan.md](docs/plan.md): scope, design for each layer, who does what, timeline
-- [docs/Guideline.md](docs/Guideline.md): the course guideline we're following
+## How it runs
 
-## What's not included
+We have two OpenStack VMs, `dat535-dev` and `dat535-prod`. Both have a self-hosted GitHub Actions runner (labels `dev` and `prod`), the code in `~/app` and a virtualenv in `~/venv`. Prod has a 200 GB volume mounted on `/data`.
 
-No streaming, no real-time dashboard, no delay prediction. It's a batch pipeline that answers one question well.
+- **Bronze**: cron on prod runs [scripts/run_bronze_cron.sh](scripts/run_bronze_cron.sh) every 5 minutes. We don't use a GitHub schedule here because those runs are often late by a lot.
+- **Silver, lines, Gold**: [pipeline.yml](.github/workflows/pipeline.yml) runs on the prod runner every night at 03:17 UTC and processes yesterday. In practice GitHub often starts it hours later, which is fine for a daily batch. At the end it writes a short summary on the run page and goes red if Gold failed or if Bronze is missing too many snapshots.
+- **Deploy**: a push to `main` updates prod, a push to `dev` updates the dev VM ([deploy.yml](.github/workflows/deploy.yml)).
+- **Tests**: ruff and pytest on GitHub's own machines for every push and PR ([tests.yml](.github/workflows/tests.yml)), so PR code never runs on our VMs.
 
-## Running it
+The data ends up under `data_root` from the config (`/data/entur` on prod, `/data/entur-dev` on dev):
 
-Not available yet. This section will get the real steps (config, environments, how to trigger a run) once the pipeline exists. The goal is that you can clone the repo and run it without asking us anything.
+```
+bronze/entur_siri/dt=YYYY-MM-DD/hour=HH/*.xml.gz
+bronze/entur_siri/_metadata/dt=YYYY-MM-DD.jsonl
+silver/stop_calls/          partitioned by service_date
+silver/rejected_calls/
+silver/quality/
+reference/line_names/
+gold/punctuality_by_line_hour/
+gold/punctuality_by_stop/
+gold/_status/status.jsonl
+```
+
+All times in Bronze and Silver are UTC. Gold uses Norway time for the hour.
+
+## Running it yourself
+
+You need Python 3.10+ and Java 17+ (for PySpark). Linux is easiest; the cron script uses `flock`.
+
+```bash
+git clone https://github.com/tommasofacchin/rogaland-transit-medallion.git
+cd rogaland-transit-medallion
+python -m venv ~/venv
+~/venv/bin/pip install -e ".[spark,dev]"
+```
+
+### Config
+
+Copy `config/dev.yaml` and change `data_root` to a folder you can write to. If you're not us, also change `client_name`: Entur wants every client to send its own `ET-Client-Name`.
+
+```yaml
+env: dev
+interval_min: 5
+compress: true
+data_root: /home/you/entur-data
+entur:
+  et_url: https://api.entur.io/realtime/v1/rest/et
+  dataset_id: KOL
+  client_name: yourname-test
+  timeout_s: 60
+```
+
+### Collect Bronze
+
+One snapshot:
+
+```bash
+~/venv/bin/python jobs/run_pipeline.py bronze --config config/dev.yaml
+```
+
+To collect for real, add this to `crontab -e` (the script reads `config/<env>.yaml` and logs to `~/logs/`):
+
+```
+*/5 * * * * $HOME/app/scripts/run_bronze_cron.sh dev
+```
+
+The script expects the repo in `~/app` and the venv in `~/venv`; set `APP_DIR` if your repo is somewhere else. Let it run for at least a full day before going on, because Silver reads one extra day on each side so trips that cross midnight are complete.
+
+### Silver, lines, Gold
+
+The same three steps the nightly workflow runs, for one day or a range:
+
+```bash
+PY=~/venv/bin/python
+$PY jobs/run_pipeline.py silver --config config/dev.yaml --from 2026-11-10 --to 2026-11-10
+$PY jobs/run_pipeline.py lines  --config config/dev.yaml
+$PY jobs/run_pipeline.py gold   --config config/dev.yaml --from 2026-11-10 --to 2026-11-10
+```
+
+Rerunning a day overwrites only that day's partitions, so it's safe to run again. One Silver day takes about 5 minutes on our VMs (8 GB RAM; Spark gets 4 GB). Gold takes under a minute.
+
+`lines` asks Entur's Journey Planner for the public line number (e.g. `X39`) of any line it hasn't seen before. If it fails, Gold still works, the lines just have no name.
+
+### Looking at the results
+
+```bash
+$PY scripts/gold_report.py   --config config/dev.yaml                    # main answers, as Spark SQL
+$PY scripts/show_quality.py  --config config/dev.yaml --day 2026-11-10   # Silver quality numbers
+$PY scripts/run_summary.py   --config config/dev.yaml --day 2026-11-10   # same table as the run page
+$PY jobs/bronze_summary.py   --config config/dev.yaml                    # runs per day and gaps
+$PY scripts/make_charts.py   --config config/dev.yaml --out charts/      # charts for the report
+```
+
+`make_charts.py` needs matplotlib (in the `dev` extras). For the stop map it also uses `contextily` and `folium` if they are installed.
+
+### Tests
+
+```bash
+ruff check src tests
+pytest -q
+```
+
+The tests start a local Spark, so Java is needed here too.
+
+## Running it on our VMs
+
+If you have access to the repo and the VMs, you don't need most of the above:
+
+- Merge to `dev` to deploy on the dev VM, merge to `main` to deploy on prod.
+- To run the pipeline by hand, go to Actions → *Daily pipeline* → *Run workflow*, pick a day (empty = yesterday) and a target (`prod` or `dev`).
+- *Bronze ingest* can also be started by hand, but only for testing: cron already collects every 5 minutes.
 
 ## Data
 
-Entur real-time API (SIRI). No key needed, but you have to send an `ET-Client-Name` header, and the rate limit is around 5 requests per minute. Entur data is open; we'll double check the exact licence and cite it in the report.
+Entur real-time API (SIRI ET), dataset `KOL`. No key needed, but you have to send an `ET-Client-Name` header, and you shouldn't poll much more than a few times a minute. The data is open under the Norwegian Licence for Open Government Data (NLOD).
 
-One catch: the API has no history, so anything we don't collect is gone. That's why Bronze starts first.
-
-## Team
-
-- Tommaso Facchin
-- Oliwier Trawinski
+The API has no history, so anything we didn't collect is gone. Our archive starts on 27 October 2026.
