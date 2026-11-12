@@ -13,33 +13,34 @@ Categories (plan 4.1):
 - **derived**: computed by us
 - **unreliable**: present, but we don't fully trust it
 
-The "% present" column is filled in from `scripts/explore_snapshot.py` on real snapshots
-(R = recorded calls, E = estimated calls).
+The "% present" column is measured on all of Silver after the rebuild on 11 Nov
+(27 Oct - 10 Nov, 1,974,429 rows: R = 1,960,059 recorded, E = 14,370 estimated).
+"Present" means not null, so for `cancelled` it does not say how many trips were cancelled.
 
 ## Trip columns
 
-| Column | SIRI field | Type | Category | % present | Notes |
+| Column | SIRI field | Type | Category | % present (R / E) | Notes |
 |---|---|---|---|---|---|
-| journey_id | FramedVehicleJourneyRef/DatedVehicleJourneyRef | string | essential | | e.g. `KOL:ServiceJourney:6_1001` |
-| service_date | FramedVehicleJourneyRef/DataFrameRef | date | essential | | operating day, so a trip at 00:30 can belong to the day before |
-| line | LineRef | string | essential | | e.g. `KOL:Line:2_6` |
-| direction | DirectionRef | string | optional | | |
-| operator | OperatorRef | string | optional | | |
-| mode | VehicleMode | string | optional | | lower-cased by the rules (`bus`, `water`, ...) |
-| cancelled | Cancellation | boolean | unreliable | | we don't know yet how fast Kolumbus sets it |
+| journey_id | FramedVehicleJourneyRef/DatedVehicleJourneyRef | string | essential | 100 / 100 | e.g. `KOL:ServiceJourney:6_1001` |
+| service_date | FramedVehicleJourneyRef/DataFrameRef | date | essential | 100 / 100 | operating day, so a trip at 00:30 can belong to the day before |
+| line | LineRef | string | essential | 100 / 100 | e.g. `KOL:Line:2_6` |
+| direction | DirectionRef | string | optional | 100 / 100 | |
+| operator | OperatorRef | string | optional | 100 / 100 | |
+| mode | VehicleMode | string | optional | 99.9 / 97.4 | lower-cased by the rules (`bus`, `water`, ...) |
+| cancelled | Cancellation | boolean | unreliable | 0.6 / 14.5 | mostly only sent when it is set, so null means "not said" |
 
 ## Stop columns
 
 | Column | SIRI field | Type | Category | % present (R / E) | Notes |
 |---|---|---|---|---|---|
-| stop_order | Order | int | essential | | position in the trip, starts at 1 |
-| stop_id | StopPointRef | string | essential | | NSR quay id, e.g. `NSR:Quay:4111` |
-| stop_name | StopPointName | string | optional | | æ ø å; flagged if it looks broken |
-| aimed_arrival | AimedArrivalTime | timestamp UTC | essential* | | missing on the first stop |
-| aimed_departure | AimedDepartureTime | timestamp UTC | essential* | | missing on the last stop |
-| actual_or_expected_arrival | ActualArrivalTime (R) / ExpectedArrivalTime (E) | timestamp UTC | optional | | |
-| actual_or_expected_departure | ActualDepartureTime (R) / ExpectedDepartureTime (E) | timestamp UTC | optional | | |
-| call_status | RecordedCall or EstimatedCall | string | derived | | `recorded` / `estimated` |
+| stop_order | Order | int | essential | 100 / 100 | position in the trip, starts at 1 |
+| stop_id | StopPointRef | string | essential | 100 / 100 | NSR quay id, e.g. `NSR:Quay:4111` |
+| stop_name | StopPointName | string | optional | 99.4 / 97.8 | æ ø å; flagged if it looks broken |
+| aimed_arrival | AimedArrivalTime | timestamp UTC | essential* | 96.4 / 97.4 | missing on the first stop |
+| aimed_departure | AimedDepartureTime | timestamp UTC | essential* | 96.5 / 79.1 | missing on the last stop |
+| actual_or_expected_arrival | ActualArrivalTime (R) / ExpectedArrivalTime (E) | timestamp UTC | optional | 96.4 / 97.4 | |
+| actual_or_expected_departure | ActualDepartureTime (R) / ExpectedDepartureTime (E) | timestamp UTC | optional | 96.5 / 79.1 | |
+| call_status | RecordedCall or EstimatedCall | string | derived | 100 / 100 | `recorded` / `estimated` |
 
 \* at least one of the two aimed times must be there, otherwise the row is rejected.
 
@@ -78,8 +79,25 @@ stored. `PublishedLineName` is empty in the Kolumbus feed, so line numbers come 
 
 ## Things we noticed in the raw data
 
-(fill in from explore_snapshot.py: how often recorded stops miss an actual time, whether
-`Order` always starts at 1, whether aimed times change between snapshots, ...)
+- Finished trips leave the feed 4-11 min after their last stop (retention test, 26 Oct).
+  That is why we poll every 5 min.
+- Every snapshot repeats all running trips, so one stop shows up about 22 times
+  (2 Nov: 3,401,155 stop rows in the snapshots, 153,568 after dedup).
+- 99.3% of the stops in Silver end as `recorded`. The other 0.7% (14,370) are still
+  `estimated` in the last snapshot that had the trip, mostly just after midnight
+  (10 Nov: up to 4.7% of the stops at 00h, 0.4% at 15h). Their delay is a forecast.
+- Recorded stops practically always have an actual time when they have the aimed time (96.4% / 96.5%
+  for both). The missing 3.5% are the first stop (no arrival) and the last stop (no departure).
+- Estimated rows miss the departure much more often (79.1%): many of them are the last
+  stops of a trip, which only have an arrival.
+- `PublishedLineName` is empty for Kolumbus, and Journey Planner usually gives the same
+  text as the public number, so a line is shown as "X39", not with a route name.
+- One line id can have several route variants. X39 has three: Stavanger - Ålgård
+  (57 stops, 44 trips), Gjesdal - Jernbaneveien (58 stops, 33 trips, 05-07) and a short
+  Gjesdal - Jernbaneveien (34 stops, 22 trips, 14-15). So `stop_order` only means the same
+  stop inside one variant.
+- Spark's own XML reader dropped the +01:00 offset of the times, so we parse with
+  ElementTree and convert to UTC ourselves.
 
 # Gold (`gold/`)
 
@@ -118,7 +136,8 @@ counts. Gold is only written when status is `ok`.
 
 ## line_names
 Built by `reference/lines.py` (step `lines`) from Entur's Journey Planner API, for every line id
-in Silver. Overwritten on every run.
+in Silver. Only line ids not yet in the table are looked up, so most nights there is no API
+call. Ids that Journey Planner does not know are saved with empty names, so we don't ask again.
 
 | Column | Meaning |
 |---|---|
