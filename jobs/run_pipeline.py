@@ -20,6 +20,7 @@ def start_spark(name):
     return (SparkSession.builder.appName(name)
             .config("spark.driver.memory", "4g")
             .config("spark.sql.session.timeZone", "UTC")  # all our times are UTC
+            .config("spark.sql.shuffle.partitions", "8")  # ~150k rows a day, see decisions
             .getOrCreate())
 
 
