@@ -9,7 +9,7 @@ from datetime import date
 from entur_pipeline.bronze.ingest import ingest
 from entur_pipeline.config import load_config
 
-STEPS = ["bronze", "silver", "lines", "gold"]
+STEPS = ["bronze", "bronze-lines", "silver", "lines", "gold"]
 
 
 def start_spark(name):
@@ -40,6 +40,13 @@ def main(argv=None):
     print(f"[{cfg['env']}] running step: {args.step}")
     if args.step == "bronze":
         record = ingest(cfg)
+        print(json.dumps(record, indent=2))
+        if record["_bronze_status"] != "valid":
+            return 1
+    elif args.step == "bronze-lines":
+        from entur_pipeline.bronze.lines import ingest_lines
+
+        record = ingest_lines(cfg)
         print(json.dumps(record, indent=2))
         if record["_bronze_status"] != "valid":
             return 1

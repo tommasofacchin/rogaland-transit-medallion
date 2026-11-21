@@ -1,102 +1,65 @@
-from datetime import datetime
-
-from entur_pipeline.reference import lines
-from entur_pipeline.reference.lines import fetch_lines, new_line_ids, to_rows
-
-
+import gzip
+import json
+from datetime import datetime, timezone
+ 
+from entur_pipeline.bronze import lines as bronze_lines
+from entur_pipeline.bronze.lines import check_answer, ingest_lines, lines_paths
+from entur_pipeline.reference.lines import build_line_names
+ 
+ 
 class FakeResponse:
+    status_code = 200
+ 
     def __init__(self, body):
-        self.body = body
-
+        self.content = json.dumps(body).encode()
+ 
     def raise_for_status(self):
         pass
-
-    def json(self):
-        return self.body
-
-
-def test_fetch_lines_asks_in_batches_and_skips_unknown_ids(monkeypatch):
-    calls = []
-
-    def fake_post(url, json, headers, timeout):
-        calls.append(json["variables"]["ids"])
-        found = [{"id": i, "publicCode": i[-1], "name": "x", "transportMode": "bus"}
-                 for i in json["variables"]["ids"] if i != "L-unknown"]
-        return FakeResponse({"data": {"lines": found + [None]}})
-
-    monkeypatch.setattr(lines, "BATCH", 2)
-    monkeypatch.setattr(lines.requests, "post", fake_post)
-
-    result = fetch_lines(["L1", "L2", "L-unknown"], "test-client")
-
-    assert calls == [["L1", "L2"], ["L-unknown"]]
-    assert [line["id"] for line in result] == ["L1", "L2"]
-
-
-def test_fetch_lines_raises_on_graphql_error(monkeypatch):
-    monkeypatch.setattr(lines.requests, "post",
-                        lambda *a, **k: FakeResponse({"errors": [{"message": "bad"}]}))
-    try:
-        fetch_lines(["L1"], "test-client")
-    except RuntimeError as exc:
-        assert "bad" in str(exc)
-    else:
-        raise AssertionError("expected RuntimeError")
-
-
-def test_to_rows():
-    t = datetime(2026, 11, 7, 15, 0)
-    line = {"id": "KOL:Line:2_6", "publicCode": "6", "name": "Sola", "transportMode": "bus"}
-    assert to_rows([line], t) == [("KOL:Line:2_6", "6", "Sola", "bus", t)]
-
-
-def test_new_line_ids():
-    assert new_line_ids(["L2", "L1", "L3"], ["L1"]) == ["L2", "L3"]
-    assert new_line_ids(["L1"], ["L1", "L9"]) == []
-
-
-def test_build_line_names_keeps_old_names_and_asks_only_for_new(spark, tmp_path, monkeypatch):
-    asked = []
-
-    def fake_fetch(ids, client_name):
-        asked.append(list(ids))
-        return [{"id": i, "publicCode": i[-1], "name": "x", "transportMode": "bus"}
-                for i in ids]
-
-    monkeypatch.setattr(lines, "fetch_lines", fake_fetch)
-    cfg = {"data_root": str(tmp_path), "entur": {"client_name": "test"}}
-    silver = str(tmp_path / "silver" / "stop_calls")
-
-    spark.createDataFrame([("L1",), ("L2",)], ["line"]).write.parquet(silver)
-    lines.build_line_names(spark, cfg)
-    # next day L2 is gone from Silver and L3 is new
-    spark.createDataFrame([("L1",), ("L3",)], ["line"]).write.mode("overwrite").parquet(silver)
-    result = lines.build_line_names(spark, cfg)
-
-    assert asked == [["L1", "L2"], ["L3"]]
-    assert result == {"line_ids": 2, "known": 2, "asked": 1, "found": 1, "unknown": 0}
-    saved = spark.read.parquet(str(tmp_path / "reference" / "line_names"))
-    assert sorted(r.line for r in saved.collect()) == ["L1", "L2", "L3"]
-
-
-def test_build_line_names_saves_unknown_ids_and_asks_only_once(spark, tmp_path, monkeypatch):
-    asked = []
-
-    def fake_fetch(ids, client_name):
-        asked.append(list(ids))
-        return [{"id": i, "publicCode": "1", "name": "x", "transportMode": "bus"}
-                for i in ids if i != "L9"]  # Journey Planner does not know L9
-
-    monkeypatch.setattr(lines, "fetch_lines", fake_fetch)
-    cfg = {"data_root": str(tmp_path), "entur": {"client_name": "test"}}
+ 
+ 
+def answer(*lines):
+    return {"data": {"lines": [{"id": i, "publicCode": code, "name": "x",
+                                "transportMode": "bus"} for i, code in lines]}}
+ 
+ 
+def save_answer(root, ts, body):
+    raw_file, _ = lines_paths(root, ts, "local-1")
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_file.write_bytes(gzip.compress(json.dumps(body).encode()))
+ 
+ 
+def test_check_answer():
+    assert check_answer(json.dumps(answer(("L1", "1"))))[0] == "valid"
+    assert check_answer(json.dumps({"data": {"lines": []}}))[0] == "empty"
+    assert check_answer(json.dumps({"errors": [{"message": "bad"}]}))[0] == "api_error"
+    assert check_answer(b"<html>")[0] == "parse_error"
+ 
+ 
+def test_ingest_lines_saves_raw_answer_and_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(bronze_lines.requests, "post",
+                        lambda *a, **k: FakeResponse(answer(("L1", "1"), ("L2", "2"))))
+    cfg = {"env": "test", "data_root": str(tmp_path), "entur": {"client_name": "test"}}
+    now = datetime(2026, 11, 21, 3, 17, tzinfo=timezone.utc)
+ 
+    record = ingest_lines(cfg, now=now)
+ 
+    assert record["_bronze_status"] == "valid" and record["lines"] == 2
+    raw_file, meta_file = lines_paths(tmp_path, now, record["_bronze_run_id"])
+    assert json.loads(gzip.decompress(raw_file.read_bytes())) == answer(("L1", "1"), ("L2", "2"))
+    assert json.loads(meta_file.read_text())["file"] == str(raw_file)
+ 
+ 
+def test_build_line_names_keeps_newest_name_and_old_lines(spark, tmp_path):
+    save_answer(tmp_path, datetime(2026, 11, 20, 3, 17), answer(("L1", "old"), ("L2", "2")))
+    # next day L1 got a new code and L2 is gone from the list
+    save_answer(tmp_path, datetime(2026, 11, 21, 3, 17), answer(("L1", "new"), ("L3", "3")))
     spark.createDataFrame([("L1",), ("L9",)], ["line"]).write.parquet(
         str(tmp_path / "silver" / "stop_calls"))
-
-    first = lines.build_line_names(spark, cfg)
-    second = lines.build_line_names(spark, cfg)
-
-    assert asked == [["L1", "L9"]]
-    assert first["unknown"] == 1 and second["asked"] == 0
-    saved = spark.read.parquet(str(tmp_path / "reference" / "line_names"))
-    l9 = next(r for r in saved.collect() if r.line == "L9")
-    assert l9.public_code is None and l9.line_name is None
+ 
+    result = build_line_names(spark, {"data_root": str(tmp_path)})
+ 
+    saved = {r.line: r.public_code for r in
+             spark.read.parquet(str(tmp_path / "reference" / "line_names")).collect()}
+    assert saved == {"L1": "new", "L2": "2", "L3": "3"}
+    assert result == {"line_names": 3, "silver_lines_without_name": 1}  # L9
+ 
