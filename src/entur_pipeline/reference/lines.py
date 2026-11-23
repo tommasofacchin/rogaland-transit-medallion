@@ -25,8 +25,9 @@ ANSWER_SCHEMA = StructType([StructField("data", StructType([
 def read_bronze_lines(spark, data_root):
     """One row per line per saved answer, with the time the answer was fetched."""
     files = Path(data_root) / "bronze" / "entur_lines"
-    raw = spark.read.schema(ANSWER_SCHEMA).option("multiLine", True).json(
-        str(files / "dt=*" / "entur_lines_*.json.gz"))
+    raw = (spark.read.schema(ANSWER_SCHEMA).option("multiLine", True)
+           .option("recursiveFileLookup", True).option("pathGlobFilter", "entur_lines_*.json.gz")
+           .json(str(files)))
     # entur_lines_20261121T031700Z_<run_id>.json.gz -> 2026-11-21 03:17:00
     stamp = F.regexp_extract(F.col("_metadata.file_name"), r"entur_lines_(\d{8}T\d{6})Z", 1)
     return (raw.select(F.explode("data.lines").alias("l"),
