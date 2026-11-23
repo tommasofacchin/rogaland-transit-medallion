@@ -39,6 +39,8 @@ jobs:
           echo "DAY=$DAY" >> "$GITHUB_ENV"   # for the summary step
           echo "Processing $DAY"
           PY=~/venv/bin/python
+          # a new line list for Bronze; if Entur's API fails we still have the old lists
+          $PY jobs/run_pipeline.py bronze-lines --config "$CONFIG" || echo "::warning::line list not fetched" 
           $PY jobs/run_pipeline.py silver --config "$CONFIG" --from "$DAY" --to "$DAY"
           # Gold works with the old names, so an Entur API problem only gives a warning
           $PY jobs/run_pipeline.py lines  --config "$CONFIG" || echo "::warning::line names not updated"
