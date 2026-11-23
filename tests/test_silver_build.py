@@ -213,3 +213,29 @@ def test_too_many_skipped_files_write_nothing(spark, tmp_path, monkeypatch):
         build.build_silver(spark, {"data_root": str(tmp_path)}, run_id="r1")
     assert not (tmp_path / "silver" / "stop_calls").exists()
     assert not (tmp_path / "silver" / "quality").exists()
+
+# read window
+
+def test_window_reads_only_the_hours_next_to_the_day(tmp_path):
+    from entur_pipeline.silver.build import bronze_window
+
+    for day, hour in [("2026-10-26", "10"), ("2026-10-26", "21"), ("2026-10-27", "10"),
+                      ("2026-10-28", "02"), ("2026-10-28", "10")]:
+        _bronze_file(tmp_path, day, hour, f"entur_siri_{day.replace('-', '')}T{hour}0000Z_a-1.xml")
+    start, end = bronze_window(date(2026, 10, 27), date(2026, 10, 27))
+    paths = list_bronze_files(tmp_path, start.date(), end.date(), start.hour, end.hour)
+    assert [(p.parent.parent.name[3:], p.parent.name[5:]) for p in paths] == [
+        ("2026-10-26", "21"), ("2026-10-27", "10"), ("2026-10-28", "02")]
+
+
+def test_rows_at_window_edge(spark):
+    from datetime import datetime
+
+    from entur_pipeline.silver.build import rows_at_window_edge
+
+    start, end = datetime(2026, 10, 26, 20), datetime(2026, 10, 28, 5)
+    df = spark.createDataFrame(
+        [(datetime(2026, 10, 26, 20, 30),), (datetime(2026, 10, 27, 12),),
+         (datetime(2026, 10, 28, 5, 10),)], ["snapshot_time"])
+    assert rows_at_window_edge(df, start, end) == 2
+    assert rows_at_window_edge(df, None, None) == 0
