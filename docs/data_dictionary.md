@@ -135,9 +135,9 @@ counts. Gold is only written when status is `ok`.
 # Reference (`reference/`)
 
 ## line_names
-Built by `reference/lines.py` (step `lines`) from Entur's Journey Planner API, for every line id
-in Silver. Only line ids not yet in the table are looked up, so most nights there is no API
-call. Ids that Journey Planner does not know are saved with empty names, so we don't ask again.
+Built by `reference/lines.py` (step `lines`) from the line lists in `bronze/entur_lines`
+(step `bronze-lines` saves Journey Planner's list of all Kolumbus lines once a day).
+For every line id the newest name wins, so a line that stops running keeps its last name.
 
 | Column | Meaning |
 |---|---|
@@ -145,4 +145,4 @@ call. Ids that Journey Planner does not know are saved with empty names, so we d
 | public_code | the number on the bus, e.g. `X39` |
 | line_name | name from Journey Planner (often the same as public_code) |
 | transport_mode | `bus`, `water`, ... |
-| fetched_at | when we asked the API (UTC) |
+| fetched_at | when the Bronze line list was fetched (UTC) |
