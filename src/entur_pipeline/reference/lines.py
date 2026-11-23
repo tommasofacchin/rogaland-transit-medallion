@@ -1,76 +1,63 @@
-"""Reference table `line_names`: the public line number and name for every line id in Silver.
+"""Reference table `line_names`: the public line number and name for every Kolumbus line id.
 
-Kolumbus only sends ids like KOL:Line:8_2043 in the SIRI feed (PublishedLineName is empty),
-so we ask Entur's Journey Planner API for the names and save them as a small table that Gold
-joins. Names hardly ever change, so we only ask about line ids that are not in the table yet and keep
-the old rows. A line that stops running keeps its name, and most nights need no API call.
-Ids that Journey Planner does not know are saved too, with empty names, so we ask only once.
+Kolumbus only sends ids like KOL:Line:8_2043 in the SIRI feed (PublishedLineName is empty).
+The step `bronze-lines` saves Entur's line list in bronze/entur_lines once a day; this step
+reads all those files and keeps the newest name of every line id. A line that stops running
+keeps its last name, so old Gold rows still show it. Gold joins the table with a left join.
 """
-from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-from pyspark.sql.types import StringType, StructField, StructType, TimestampType
+from pyspark.sql import Window
+from pyspark.sql import functions as F
+from pyspark.sql.types import ArrayType, StringType, StructField, StructType
 
-JP_URL = "https://api.entur.io/journey-planner/v3/graphql"
-QUERY = "query($ids: [ID]!) { lines(ids: $ids) { id publicCode name transportMode } }"
-BATCH = 100  # line ids per request
-
-LINE_NAMES_SCHEMA = StructType([
-    StructField("line", StringType(), False),
-    StructField("public_code", StringType(), True),   # what is on the bus, e.g. "X39"
-    StructField("line_name", StringType(), True),     # often the same as public_code
-    StructField("transport_mode", StringType(), True),
-    StructField("fetched_at", TimestampType(), False),
-])
-
-
-def fetch_lines(line_ids, client_name, timeout=60):
-    """Ask Journey Planner about the line ids. Returns a list of dicts; unknown ids are left out."""
-    found = []
-    for i in range(0, len(line_ids), BATCH):
-        resp = requests.post(JP_URL, timeout=timeout,
-                             headers={"ET-Client-Name": client_name},
-                             json={"query": QUERY, "variables": {"ids": line_ids[i:i + BATCH]}})
-        resp.raise_for_status()
-        body = resp.json()
-        if body.get("errors"):
-            raise RuntimeError(f"Journey Planner error: {body['errors']}")
-        found.extend(line for line in body["data"]["lines"] if line)
-    return found
+# the part of the Journey Planner answer we use; given, so Spark does not have to guess it
+ANSWER_SCHEMA = StructType([StructField("data", StructType([
+    StructField("lines", ArrayType(StructType([
+        StructField("id", StringType()),
+        StructField("publicCode", StringType()),
+        StructField("name", StringType()),
+        StructField("transportMode", StringType()),
+    ]))),
+]))])
 
 
-def to_rows(lines, fetched_at):
-    return [(line["id"], line.get("publicCode"), line.get("name"), line.get("transportMode"),
-             fetched_at) for line in lines]
+def read_bronze_lines(spark, data_root):
+    """One row per line per saved answer, with the time the answer was fetched."""
+    files = Path(data_root) / "bronze" / "entur_lines"
+    raw = (spark.read.schema(ANSWER_SCHEMA).option("multiLine", True)
+           .option("recursiveFileLookup", True).option("pathGlobFilter", "entur_lines_*.json.gz")
+           .json(str(files)))
+    # entur_lines_20261121T031700Z_<run_id>.json.gz -> 2026-11-21 03:17:00
+    stamp = F.regexp_extract(F.col("_metadata.file_name"), r"entur_lines_(\d{8}T\d{6})Z", 1)
+    return (raw.select(F.explode("data.lines").alias("l"),
+                       F.to_timestamp(stamp, "yyyyMMdd'T'HHmmss").alias("fetched_at"))
+            .select(F.col("l.id").alias("line"),
+                    F.col("l.publicCode").alias("public_code"),
+                    F.col("l.name").alias("line_name"),
+                    F.col("l.transportMode").alias("transport_mode"),
+                    "fetched_at")
+            .filter(F.col("line").isNotNull()))
 
 
-def new_line_ids(silver_ids, known_ids):
-    """Line ids from Silver that have no name in the table yet."""
-    return sorted(set(silver_ids) - set(known_ids))
+def newest_names(lines):
+    """Keep the newest row of every line id (same idea as the Silver dedup)."""
+    w = Window.partitionBy("line").orderBy(F.col("fetched_at").desc())
+    return lines.withColumn("_rn", F.row_number().over(w)).filter("_rn = 1").drop("_rn")
 
 
 def build_line_names(spark, cfg):
-    """Fetch names for lines that are new in Silver and add them to reference/line_names."""
+    """Rebuild reference/line_names from Bronze and count Silver lines that have no name."""
     root = Path(cfg["data_root"])
-    path = root / "reference" / "line_names"
-    silver = spark.read.parquet(str(root / "silver" / "stop_calls"))
-    ids = [r["line"] for r in silver.select("line").distinct().collect() if r["line"]]
+    names = newest_names(read_bronze_lines(spark, root)).cache()
+    names.write.mode("overwrite").parquet(str(root / "reference" / "line_names"))
 
-    # small table: read it into Python, Spark can't overwrite a folder it is still reading
-    old = []
-    if path.exists():
-        table = spark.read.parquet(str(path)).select(*LINE_NAMES_SCHEMA.names)
-        old = [tuple(r) for r in table.collect()]
-    todo = new_line_ids(ids, [r[0] for r in old])
-
-    found = fetch_lines(todo, cfg["entur"]["client_name"]) if todo else []
-    if todo:
-        now = datetime.now(timezone.utc)
-        found_ids = {line["id"] for line in found}
-        unknown = [(i, None, None, None, now) for i in todo if i not in found_ids]
-        rows = old + to_rows(found, now) + unknown
-        df = spark.createDataFrame(rows, LINE_NAMES_SCHEMA)
-        df.write.mode("overwrite").parquet(str(path))
-    return {"line_ids": len(ids), "known": len(old), "asked": len(todo), "found": len(found),
-            "unknown": len(todo) - len(found)}
+    # only a check: Gold still works, a line without a name shows its raw id
+    missing = 0
+    silver_path = root / "silver" / "stop_calls"
+    if silver_path.exists():
+        silver_lines = spark.read.parquet(str(silver_path)).select("line").distinct()
+        missing = silver_lines.join(names, "line", "left_anti").count()
+    result = {"line_names": names.count(), "silver_lines_without_name": missing}
+    names.unpersist()
+    return result
