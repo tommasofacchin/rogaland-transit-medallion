@@ -2,6 +2,7 @@
 
 punctuality_by_line_hour: one row per service date, line and hour of the day (Norway time).
 punctuality_by_stop:      one row per service date and stop.
+punctuality_by_line_hour_all: one row per line and hour, over every day in Silver.
 
 Both tables keep the counts and not only the shares, so a consumer can add up several days
 and still get the right share. Gold is only written when Silver looks complete, and every run
@@ -63,6 +64,13 @@ def by_line_hour(silver, line_names=None):
     return add_line_names(add_shares(grouped), line_names)
 
 
+def by_line_hour_all(silver, line_names=None):
+    """Same groups as by_line_hour, but over every day in Silver at once.
+    The counts could be added up from the daily table, the p90 delay cannot: it needs all rows."""
+    grouped = (add_columns(silver).groupBy("line", "hour")
+               .agg(F.count_distinct("service_date").alias("days"), *measures()))
+    return add_line_names(add_shares(grouped), line_names)
+
 def add_line_names(df, line_names):
     """Add public_code and line_name. They stay null if a line (or the whole table) is missing."""
     if line_names is None:
@@ -117,8 +125,11 @@ def build_gold(spark, cfg, date_from=None, date_to=None, run_id="local"):
         days = sorted(day_counts)
     problems = check_silver(day_counts, days) if days else ["no Silver data for these dates"]
 
-    line_hour = by_line_hour(silver, read_line_names(spark, cfg["data_root"])).cache()
+    line_names = read_line_names(spark, cfg["data_root"])
+    line_hour = by_line_hour(silver, line_names).cache()
     stop = by_stop(silver).cache()
+    # the whole period: every day in Silver, not only the days of this run
+    line_hour_all = by_line_hour_all(spark.read.parquet(str(silver_path)), line_names).cache()
 
     # every Silver row must end up in exactly one group of each table
     silver_rows = sum(day_counts.values())
@@ -131,10 +142,14 @@ def build_gold(spark, cfg, date_from=None, date_to=None, run_id="local"):
     if not problems:
         # overwrite only the days of this run, like Silver
         spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
-        (line_hour.write.mode("overwrite").partitionBy("service_date")
-         .parquet(str(root / "punctuality_by_line_hour")))
-        (stop.write.mode("overwrite").partitionBy("service_date")
-         .parquet(str(root / "punctuality_by_stop")))
+        # one task per day, so each day is one Parquet file and not one per task
+        (line_hour.repartition("service_date").write.mode("overwrite")
+         .partitionBy("service_date").parquet(str(root / "punctuality_by_line_hour")))
+        (stop.repartition("service_date").write.mode("overwrite")
+         .partitionBy("service_date").parquet(str(root / "punctuality_by_stop")))
+        # not partitioned, so overwrite replaces the whole table
+        (line_hour_all.coalesce(1).write.mode("overwrite")
+         .parquet(str(root / "punctuality_by_line_hour_all")))
 
     record = {
         "run_id": run_id,
@@ -146,10 +161,12 @@ def build_gold(spark, cfg, date_from=None, date_to=None, run_id="local"):
         "silver_rows": silver_rows,
         "line_hour_rows": line_hour.count(),
         "stop_rows": stop.count(),
+        "line_hour_all_rows": line_hour_all.count(),
     }
     write_status(root, record)
 
     silver.unpersist()
     line_hour.unpersist()
     stop.unpersist()
+    line_hour_all.unpersist()
     return record

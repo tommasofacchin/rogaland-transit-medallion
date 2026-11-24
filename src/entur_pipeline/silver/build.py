@@ -5,8 +5,8 @@ by service_date. Rejected rows go to `silver/rejected_calls` and the run's metri
 `silver/quality`. A snapshot that cannot be read is skipped and counted, not fatal.
 
 Night trips: a trip can have service_date D but show up in the Bronze files of day D+1 (or
-D-1, because dt= is a UTC day). So we read the last hours of D-1 and 
-the first hours of D+1 too (measured on prod, see decisions)" instead of "one extra Bronze day on each side.
+D-1, because dt= is a UTC day). So we also read the last hours of D-1 and the first hours
+of D+1 (FIRST_HOUR_BEFORE / LAST_HOUR_AFTER, measured on prod with scripts/window_check.py).
 """
 import xml.etree.ElementTree as ET
 import zlib
@@ -171,10 +171,12 @@ def build_silver(spark, cfg, date_from=None, date_to=None, run_id="local"):
 
     # Overwrite only the service dates present in this run, not the whole table
     spark.conf.set("spark.sql.sources.partitionOverwriteMode", "dynamic")
-    root = Path(cfg["data_root"]) / "silver"
-    silver.write.mode("overwrite").partitionBy("service_date").parquet(str(root / "stop_calls"))
-    (rejected.write.mode("overwrite").partitionBy("service_date")
-     .parquet(str(root / "rejected_calls")))
+    root = Path(cfg["data_root"]) / "silver"    
+    # one task per day, so each day is one Parquet file and not one per task
+    (silver.repartition("service_date").write.mode("overwrite")
+     .partitionBy("service_date").parquet(str(root / "stop_calls")))
+    (rejected.repartition("service_date").write.mode("overwrite")
+     .partitionBy("service_date").parquet(str(root / "rejected_calls")))
 
     unparseable = results.map(lambda r: r[2]).sum()
     metrics = collect_metrics(clean, rejected, silver, unparseable=unparseable)
