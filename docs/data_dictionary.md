@@ -101,8 +101,7 @@ stored. `PublishedLineName` is empty in the Kolumbus feed, so line numbers come 
 
 # Gold (`gold/`)
 
-Built by `gold/build.py` from `silver/stop_calls`, partitioned by `service_date`.
-Both tables have the same measures:
+Built by `gold/build.py` from `silver/stop_calls`. The daily tables are partitioned by `service_date`. All tables have the same measures:
 
 | Column | Meaning |
 |---|---|
@@ -127,6 +126,12 @@ Norway time (Europe/Oslo), not UTC.
 ## punctuality_by_stop
 One row per `service_date`, `stop_id`. `stop_name` is any name seen for the stop, because some
 lines send no names.
+
+## punctuality_by_line_hour_all
+One row per `line`, `hour`, over every day in Silver (not partitioned). Rebuilt in full on
+every Gold run. Same columns as `punctuality_by_line_hour` without `service_date`, plus `days`
+(number of service dates the group has data for). The counts could also be added up from the
+daily table, but `p90_delay_s` cannot, so it is computed from all Silver rows.
 
 ## _status/status.jsonl
 One JSON line per Gold run: run_id, run_time, dates, status (`ok`/`failed`), problems and row
