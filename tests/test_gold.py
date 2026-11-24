@@ -5,6 +5,7 @@ from silver_rows import T0, call, df_of
 from entur_pipeline.gold.build import (
     build_gold,
     by_line_hour,
+    by_line_hour_all,
     by_stop,
     check_silver,
     days_between,
@@ -107,6 +108,8 @@ def test_build_gold_writes_tables_and_status(spark, tmp_path, monkeypatch):
     assert record["silver_rows"] == 2
     gold = spark.read.parquet(str(tmp_path / "gold" / "punctuality_by_line_hour"))
     assert gold.agg({"calls": "sum"}).first()[0] == 2
+    all_days = spark.read.parquet(str(tmp_path / "gold" / "punctuality_by_line_hour_all"))
+    assert all_days.agg({"calls": "sum"}).first()[0] == 2
     status = (tmp_path / "gold" / "_status" / "status.jsonl").read_text()
     assert '"status": "ok"' in status
 
@@ -142,3 +145,11 @@ def test_line_without_name_still_counts(spark):
 def test_no_line_names_table_gives_null_columns(spark):
     r = by_line_hour(silver_of(spark, call())).first()
     assert r["public_code"] is None
+
+
+def test_line_hour_all_puts_the_days_together(spark):
+    silver = silver_of(spark, late(0), late(600, service_date=date(2026, 10, 28)))
+    rows = by_line_hour_all(silver).collect()
+    assert len(rows) == 1
+    assert rows[0]["days"] == 2
+    assert rows[0]["calls"] == 2 and rows[0]["late_calls"] == 1

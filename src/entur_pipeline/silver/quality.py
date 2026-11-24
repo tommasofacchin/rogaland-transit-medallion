@@ -56,21 +56,21 @@ def collect_metrics(clean, rejected, silver, unparseable=0):
 
     m["rows_clean"] = clean.count()
 
-    # flags and nulls are counted after dedup, so each stop call counts once
-    flag_sums = [F.sum(F.col(f).cast("int")).alias("flagged_" + f) for f in FLAGS]
-    null_sums = [F.sum(F.col(c).isNull().cast("int")).alias("nulls_" + c) for c in ESSENTIAL]
-    row = silver.agg(F.count("*").alias("rows_silver"), *flag_sums, *null_sums).first()
-    for name, value in row.asDict().items():
-        m[name] = value or 0
-    # measured stops that only have a predicted time (never became a RecordedCall).
-    # "measured" is the same test as in gold/build.py, so the numbers match Gold.
+    # flags, nulls and estimated-only stops in one pass over Silver (after dedup, so each
+    # stop call counts once). "measured" is the same test as in gold/build.py.
     delay = F.coalesce("departure_delay_s", "arrival_delay_s")
     measured = ~F.col("exclude_from_punctuality") & delay.isNotNull()
-    m["measured_estimated_only"] = silver.filter(
-        measured & (F.col("call_status") == "estimated")).count()
+    flag_sums = [F.sum(F.col(f).cast("int")).alias("flagged_" + f) for f in FLAGS]
+    null_sums = [F.sum(F.col(c).isNull().cast("int")).alias("nulls_" + c) for c in ESSENTIAL]
+    estimated_only = F.sum((measured & (F.col("call_status") == "estimated")).cast("int"))
+    row = silver.agg(F.count("*").alias("rows_silver"), *flag_sums, *null_sums,
+                     estimated_only.alias("measured_estimated_only")).first()
+    for name, value in row.asDict().items():
+        m[name] = value or 0
 
-    m["duplicate_keys_before_dedup"] = duplicate_keys(clean)
-    m["duplicate_keys_after_dedup"] = duplicate_keys(silver)
+    # the row counts are already known, so only the distinct keys are counted here
+    m["duplicate_keys_before_dedup"] = m["rows_clean"] - clean.select(*KEY).distinct().count()
+    m["duplicate_keys_after_dedup"] = m["rows_silver"] - silver.select(*KEY).distinct().count()
     m["schema_ok"] = int(schema_ok(silver))
     return m
 
