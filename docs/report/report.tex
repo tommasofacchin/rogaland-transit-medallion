@@ -1,8 +1,5 @@
 \documentclass[11pt,a4paper]{article}
 
-% ---------------------------------------------------------------
-% Packages
-% ---------------------------------------------------------------
 \usepackage[utf8]{inputenc}
 \usepackage[T1]{fontenc}
 \usepackage{lmodern}
@@ -14,16 +11,22 @@
 \usepackage{xcolor}
 \usepackage{listings}
 \usepackage{caption}
-\usepackage{subcaption}
 \usepackage{enumitem}
 \usepackage{microtype}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit}
+\usepackage{xurl}
 \usepackage[hidelinks]{hyperref}
+\urlstyle{same}
+\usepackage{colortbl}
+\newcommand{\rowline}{\arrayrulecolor{black!25}\midrule\arrayrulecolor{black}}
 
 \graphicspath{{figures/}}
 \setlist{nosep, leftmargin=*}
+\setlist[itemize]{topsep=0.2em, itemsep=0.25em}
 \setlength{\parskip}{0.4em}
 \setlength{\parindent}{0pt}
-\setlength{\emergencystretch}{3em}  % long \code{} paths: move to the next line instead of overflowing
+\setlength{\emergencystretch}{3em}
 \captionsetup{font=small, labelfont=bf}
 
 \definecolor{codebg}{gray}{0.96}
@@ -40,11 +43,10 @@
   breaklines=true, columns=fullflexible,
   showstringspaces=false,
   xleftmargin=2pt, xrightmargin=2pt,
-  aboveskip=0.6em, belowskip=0.4em
+  aboveskip=0.5em, belowskip=0.3em
 }
 
 \newcommand{\code}[1]{\texttt{#1}}
-
 % ---------------------------------------------------------------
 \title{\textbf{Rogaland Transit Medallion}\\[0.3em]
 \large How punctual are the buses in Rogaland?\\[0.5em]
@@ -57,431 +59,529 @@
 
 \begin{abstract}
 \noindent
-Entur publishes live trip updates for all Kolumbus buses and boats in Rogaland, but the
-API only shows the current state and keeps no history. To find out which lines, stops and
-hours are late most often, we poll the SIRI ET feed every 5 minutes and build the history
-ourselves. Bronze keeps every raw response. Silver turns about 3.4 million repeated stop
-observations per day into roughly 153{,}000 stop calls, and Gold aggregates them into two
-punctuality tables. Everything runs on two OpenStack VMs with PySpark, and GitHub Actions
-handles tests, deployment and the nightly run. The pipeline has collected data since
-27 October 2026. About 55\% of stops are on time, 15:00 is the worst hour (33\%) and X39
-the worst line (15\%).
+Entur's live API for Kolumbus buses in Rogaland keeps no history, so we built it ourselves.
+We save the feed every 5 minutes in Bronze, turn about 3.4 million repeated stop rows per day
+into 153{,}000 stop calls in Silver, and group them into three punctuality tables in Gold. It
+runs on two OpenStack VMs with PySpark and GitHub Actions. Over 27 days (27 October to
+22 November 2026), 55\% of stops are on time, 15:00 on weekdays is the worst hour (33\%), and
+X39 is the worst line (14\%).
 \end{abstract}
 
+% ===============================================================
 \section{Scope}
 
-The question we want to answer is which Kolumbus lines, stops and hours in Rogaland are
-least punctual. A planner at Kolumbus or the county could use the answer to decide where
-to fix timetables first. We picked this data because we take these buses every day, and
-because it forces some real decisions: there is no historical download, so collection had
-to work from the first day, and every snapshot repeats all running trips, so most of the
-Silver work is deduplication.
+We want to find out which Kolumbus lines, stops and hours are least punctual. A planner at
+Kolumbus or in the county could use this to decide which timetables to fix first. We picked
+this data because we use these buses ourselves, and because it forced real decisions: the API
+only shows the current state, and every answer repeats all running trips.
 
-We left out streaming (a nightly batch is enough for this question), trips that never show
-up in the feed (that would need the GTFS timetable), passenger numbers and a finished
-dashboard.
-
-The course suggests one notebook per layer. We kept the three layers but wrote them as
-Python modules (\code{bronze/}, \code{silver/}, \code{gold/}) with one entry point,
-\code{jobs/run\_pipeline.py}, because we wanted to schedule the pipeline every night and
-unit test it, and both are much easier with modules.
-
-\section{The data}
-
-The source is Entur's real-time API, SIRI Estimated Timetable
-(\code{/realtime/v1/rest/}\allowbreak\code{et?datasetId=KOL}). No key is needed, only an
-\code{ET-Client-Name} header and a polite request rate. The data is open under NLOD.
-\code{datasetId=KOL} returned 679 trips, all Kolumbus; \code{datasource=KOL} did not filter
-anything. One response is an XML file of about 9\,MB with every running trip. Inside it, an
-\code{EstimatedVehicleJourney} is one trip, with its \code{RecordedCall}s (stops already
-passed, real times) and \code{EstimatedCall}s (stops ahead, predictions).
-
-We looked at raw snapshots for a few days before designing anything, and found these
-problems:
+Some things are not part of the project:
 \begin{itemize}
-  \item times have a local offset (\code{+01:00}), and daylight saving changed on 25 Oct;
-  \item the same stop is repeated in about 22 snapshots in a row;
-  \item \code{PublishedLineName} is empty, so lines are only ids like \code{KOL:Line:8\_2043};
-  \item \code{Cancellation} is usually left out instead of being false;
-  \item some stop names have broken encoding (\code{Ã} instead of \code{ø});
-  \item one line can have several route variants (X39 has three).
+  \item \textbf{Live (streaming) results.} A report once a night is enough for this question.
+  \item \textbf{Trips that are not in the live feed at all.} We can only measure trips that
+        Entur sends. Finding missing trips would need the full timetable (GTFS).
+  \item \textbf{Passenger numbers and a finished dashboard.} Gold is read with Spark SQL and
+        charts (Section~\ref{sec:results}).
 \end{itemize}
 
-At one snapshot every 5 minutes this is 288 files and 2.6\,GB a day before compression.
-A Silver run reads 864 files (Section~\ref{sec:silver}) and the archive grows every day,
-and the work splits naturally per file, so Spark is a reasonable fit even though the final
-tables are small.
+We wrote the layers as Python modules with one entry point (\code{jobs/run\_pipeline.py})
+instead of notebooks, because modules are easier to schedule and to test.
 
-\section{Setup}
+% ===============================================================
+\section{Medallion architecture}
 
-We have two OpenStack VMs, \code{dat535-dev} and \code{dat535-prod}, with 8\,GB RAM each.
-There is only one floating IP, so prod has it and we reach dev through prod with SSH
-ProxyJump. Prod has a 200\,GB volume on \code{/data} so the data is not on the system disk
-and survives a rebuilt VM. Both VMs have a self-hosted GitHub runner. Dev and prod run the
-same code; only the config file differs (data folder, client name). Spark 4.1.3 runs in
-local mode with a 4\,GB driver, so the executors are the cores of the VM.
+Each layer has its own folder on the prod VM and only reads the layer below it
+(Figure~\ref{fig:arch}, Table~\ref{tab:layers}). Cron saves a Bronze snapshot every 5 minutes.
+Every night a GitHub Actions run does four steps in order: it saves a fresh copy of the line
+list in Bronze, builds Silver for the day before, rebuilds the line names table from the saved
+lists, and builds Gold.
 
-The flow is: cron on prod saves a Bronze snapshot every 5 minutes. Every night a GitHub
-Actions workflow on the prod runner builds Silver for the day before, updates the line
-names, and builds Gold.
+\begin{figure}[htb]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=2.4em, inner sep=3pt},
+  src/.style={box, fill=gray!12},
+  bro/.style={box, fill=orange!18},
+  sil/.style={box, fill=gray!25},
+  gol/.style={box, fill=yellow!35},
+  arr/.style={-{Stealth[length=5pt]}, thick},
+  lab/.style={font=\scriptsize, midway, above=1pt}
+]
+\node[src] (siri) {Entur SIRI ET};
+\node[src, below=0.6cm of siri] (jp) {Journey Planner};
+\node[bro, right=2.0cm of siri] (b1) {Bronze \code{entur\_siri}\\\scriptsize raw \code{.xml.gz}};
+\node[bro, right=2.0cm of jp] (b2) {Bronze \code{entur\_lines}\\\scriptsize raw \code{.json.gz}};
+\node[sil, right=0.9cm of b1] (s) {Silver \code{stop\_calls}\\\scriptsize + rejected, quality};
+\node[sil, right=0.9cm of b2] (r) {\code{line\_names}\\\scriptsize reference table};
+\node[gol, right=1.4cm of s, yshift=-0.85cm] (g) {Gold\\\scriptsize line+hour, stop,\\\scriptsize line+hour (all days)};
+\draw[arr] (siri) -- node[lab]{every 5 min} (b1);
+\draw[arr] (jp) -- node[lab]{daily} (b2);
+\draw[arr] (b1) -- (s);
+\draw[arr] (b2) -- (r);
+\draw[arr] (s) -- (g);
+\draw[arr] (r) -- (g);
+\node[draw, dashed, rounded corners, inner sep=5pt, fit=(s)(r)(g),
+      label={[font=\scriptsize]below:nightly run on the prod VM, 03:17 UTC}] {};
+\end{tikzpicture}
+\caption{The pipeline. Both outside sources are saved raw in Bronze before anything else
+reads them. All data lives on the prod VM in \code{/data/entur}.}
+\label{fig:arch}
+\end{figure}
+
+\begin{table}[htb]
+\centering\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\linewidth}{@{}l>{\raggedright}X>{\raggedright\arraybackslash}p{6.2cm}@{}}
+\toprule
+Layer & What is stored & Rules \\
+\midrule
+Bronze & Every API answer as received (SIRI every 5 min, line list daily), gzipped, plus one metadata line per run &
+  Never changed or overwritten. Failed and broken answers are kept and marked. \\ \rowline
+Silver & One row per stop of a trip and service day; rejected rows; a quality table. The line names table (\code{reference/}) is built the same way &
+  Built only from Bronze. Times in UTC, duplicates removed, problems flagged. A rerun replaces only the days it builds. \\ \rowline
+Gold & Three small tables: punctuality per line and hour and per stop (per service day), and per line and hour over all days &
+  Built only from Silver. Written only if Silver looks complete. The all-days table is rebuilt from all of Silver on every run. \\
+\bottomrule
+\end{tabularx}
+\caption{What each layer holds and how we keep the layers apart.}
+\label{tab:layers}
+\end{table}
+
+Table~\ref{tab:decisions} lists the main decisions. The full log with dates and owners is
+\code{docs/decisions.md} in the repository~\cite{repo}.
+
+\begin{table}[htb]
+\centering\small
+\renewcommand{\arraystretch}{1.3}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{4.3cm}>{\raggedright}X>{\raggedright\arraybackslash}p{4.3cm}@{}}
+\toprule
+Problem & What we chose & Evidence \\
+\midrule
+The API keeps no history & Start collecting before writing any Silver code & Collection runs since 27 Oct \\ \rowline
+Finished trips leave the feed after a few minutes & Poll every 5 minutes instead of 15 & Trips stay 4--11 min after the last stop \\ \rowline
+2.6\,GB of raw data a day & Store Bronze gzipped & About 15 times smaller \\ \rowline
+GitHub schedules start late & Cron on the VM for Bronze & 7{,}778 runs, no gap over 10 min \\ \rowline
+The feed has no line numbers & Save Entur's line list in Bronze every day & 320 lines, all Silver lines named \\ \rowline
+Shares cannot be added over days & Gold stores counts & Exact share for any period \\ \rowline
+A day can be incomplete & Write Gold only if Silver looks complete & All 27 days passed \\ \rowline
+200 shuffle tasks for 150k rows & 8 shuffle partitions & Gold 28\,s $\rightarrow$ 17\,s \\ \rowline
+Silver read 3 Bronze days per day & Read only the hours it needs & 864 $\rightarrow$ 372 files, 308\,s $\rightarrow$ 141\,s \\ \rowline
+Spark's XML reader dropped the \code{+01:00} offset & Parse with Python's ElementTree inside Spark, one task per file & No shifted times; no more out-of-memory \\ \rowline
+Each stop is in about 22 snapshots & Window: recorded first, newest snapshot, then \code{run\_id} & 3.4\,M $\rightarrow$ 153k rows, same result on every rerun \\ \rowline
+A bad row could hide a delay or break Gold & Reject only rows that can never give a delay, flag the rest & 0 rejected rows in 27 days \\ \rowline
+Silver can be wrong without an error & Quality table with 23 metrics per run & Every day checked in Figure~\ref{fig:quality} \\ \rowline
+The repository is public & Tests on GitHub's machines, never on our VMs & PR code never runs on our servers \\ \rowline
+Manual deploys drift apart & Deploy on merge: \code{dev} to dev VM, \code{main} to prod & Both VMs run reviewed code \\ \rowline
+Silver and Gold need logs and a status & Nightly run in GitHub Actions at 03:17 UTC & Red run below 270 of 288 snapshots \\
+\bottomrule
+\end{tabularx}
+\caption{Main decisions.}
+\label{tab:decisions}
+\end{table}
+
+\section{The data}
+\label{sec:data}
+
+We use Entur's real-time API for the SIRI Estimated Timetable~\cite{entur}. It is free and
+open (NLOD licence~\cite{nlod}) and needs no key. Each call returns one XML file of about 9\,MB
+with all Kolumbus trips running at that moment. For every trip it lists the stops already
+passed, with real times, and the stops ahead, with predicted times. To get only Kolumbus we
+use the parameter \code{datasetId=KOL}; the parameter in our first plan
+(\code{datasource=KOL}) did not filter anything.
+
+Since the API only shows the present, every day without collection is lost for good. So we
+started Bronze on 26 October, before any Silver code existed. While it was running, we studied
+the raw files and found what Silver had to handle: times with a local offset (\code{+01:00})
+just after a clock change, each stop repeated in about 22 snapshots, no line numbers, a missing
+\code{Cancellation} field, broken stop names (\code{Ã} instead of \code{ø}) and several route
+variants per line.
+
+At 288 snapshots a day this is about 5.3 million stop rows and 2.6\,GB before compression,
+and the archive grows every day. The work splits naturally by file, which is why we use Spark,
+even though the Gold tables are small.
+
+% ===============================================================
+\section{Platform on OpenStack}
+\label{sec:platform}
+
+\begin{itemize}
+  \item \textbf{Two VMs.} \code{dat535-dev} is for trying changes on a small copy of the data,
+        \code{dat535-prod} for collection and the nightly run. Both are \code{m1.large}
+        (4 cores, 8\,GB RAM) with Java 17 and PySpark 4.1.3, and run the same code with their
+        own config file.
+  \item \textbf{One floating IP.} Our quota has only one, so prod has it and we reach dev
+        through prod with SSH \code{ProxyJump}.
+  \item \textbf{Data on its own volume.} All data is on a separate 200\,GB volume on
+        \code{/data}, so it survives a rebuilt VM. Our first 50\,GB volume got stuck in
+        OpenStack when we tried to resize it, so we replaced it.
+  \item \textbf{Spark in local mode on one VM.} A weekday of Bronze is only 124\,MB compressed,
+        and a cluster over our two VMs would mix dev and prod. Every step works per file or per
+        day, so the same code could run on a real cluster if the data grew.
+  \item \textbf{Self-hosted GitHub runners.} GitHub's machines cannot reach our VMs, so each
+        VM runs its own runner. The runners only run merged code (deploy and the nightly run),
+        never code from a pull request (Section~\ref{sec:lifecycle}).
+  \end{itemize}
+
 
 \section{Bronze}
+\label{sec:bronze}
 
-Because the API has no history, the polling interval decides what we can ever know. On
-26 Oct we saved 32 snapshots 5 minutes apart on dev and checked, for every trip, the last
-snapshot it was still in against the time of its last stop
-(\code{scripts/retention\_check.py}). Finished trips stayed 4 to 11 minutes and were gone
-after about 13. With 15 minutes we would lose the final real times of most trips, so we
-poll every 5 minutes.
+\subsection*{How often to poll}
 
-At first we also had a 5-minute schedule in GitHub Actions. Together with cron this fetched
-every snapshot twice on 27 Oct, and GitHub's scheduled runs were often late anyway. We
-removed it. Cron runs \code{scripts/run\_bronze\_cron.sh} with \code{flock -n}, so two runs
-can never overlap.
+Our first plan was to poll every 15 minutes. Before we started, we tested how long a finished
+trip stays in the feed: on 26 October we saved 32 snapshots, 5 minutes apart, and compared the
+last snapshot of each trip with the time of its last stop (\code{scripts/retention\_check.py}).
+Of 771 trips that left the feed, all stayed between 4 and 11 minutes after the last stop
+(median 8), and none stayed 15. So 15 minutes would have been too slow: for most trips we would
+never see the real time at the last stops.
 
-Each response is saved exactly as received, gzipped, in
-\code{bronze/entur\_siri/}\allowbreak\code{dt=YYYY-MM-DD/}\allowbreak\code{hour=HH/}, with
-the \code{run\_id} in the file name. Gzip is lossless and makes the files about 15 times
-smaller (85\,MB a day), and both Python and Spark read \code{.gz} directly. Folders use UTC
-so daylight saving cannot create a missing or doubled hour.
+With 5 minutes, almost every trip is seen after it has finished. A trip that leaves after only
+4 minutes can still fall between two polls, and then its last stops keep the predicted time
+instead of the real one. We count these stops in every Silver run: 0.2--1.8\% a day. Leaving
+them out changes the on-time share by only 0.05 points, so we keep them. Polling more often
+would save these few stops but multiply storage and API calls.
 
-Every run, failed or not, also writes one JSON line of metadata: time, HTTP status, size,
-SHA-256 and error. The request is retried 3 times. If the XML is broken we still save it and
-mark it \code{parse\_error}; Silver decides later what to skip. Files are written under a
-\code{\_tmp\_} name and then renamed with \code{os.replace}, which is atomic, so a crash
-cannot leave half a file behind. An existing file is never overwritten. Since every Silver
-row keeps its \code{run\_id}, any number can be traced back to one Bronze file.
-\code{jobs/bronze\_summary.py} reads the metadata with Spark and reports runs per day and
-gaps (Figure~\ref{fig:bronze}).
+\subsection*{How the raw data is kept}
+
+\begin{itemize}
+  \item Every answer is saved exactly as received, gzipped (about 15 times smaller, and Spark
+        reads it directly), in folders by UTC date and hour.
+  \item Every run, also a failed one, adds one line to a metadata file: time, HTTP status, size,
+        checksum and error. Broken XML is saved too and marked as broken.
+  \item A file is never overwritten, and every Silver row keeps the id of its Bronze file, so
+        any number in Gold can be traced back to one raw answer.
+\end{itemize}
+
+Bronze runs from cron on the prod VM, not from a GitHub schedule. When we tried both, every
+snapshot was fetched twice, and GitHub's scheduled runs started minutes late, which is enough
+for a trip to leave the feed. From 27 October to 22 November there were 7{,}778 runs, one
+failed (a DNS error on 29 October), and there was no gap longer than 10 minutes.
+
+\subsection*{Line names come from Bronze too}
+
+The feed only has line ids like \code{KOL:Line:8\_2043}. Entur's Journey Planner~\cite{jp}
+knows the public number (here X39). Our first version called this API and wrote the answer
+directly into a table, so the raw answer was never kept. We got this feedback at the
+presentation and changed it:
+\begin{itemize}
+  \item The step \code{bronze-lines} saves the full Kolumbus line list (320 lines) once a day in
+        its own Bronze folder, raw, with a metadata line, the same way as the SIRI data.
+  \item The step \code{lines} reads all saved lists with Spark and keeps the newest name for
+        each line id. A line that stops running keeps its last name.
+  \item If the API is down, we only get a warning and Gold uses the lists already saved.
+\end{itemize}
+
+\begin{lstlisting}
+w = Window.partitionBy("line").orderBy(F.col("fetched_at").desc())
+names = lines.withColumn("_rn", F.row_number().over(w)).filter("_rn = 1").drop("_rn")
+\end{lstlisting}
 
 \section{Silver}
 \label{sec:silver}
 
-\subsection{Grain and parsing}
+\subsection*{Grain and key}
 
 One Silver row is one stop of one trip on one service date, with the key
-\code{journey\_id + service\_date + stop\_order}. That is the smallest unit where
-punctuality makes sense, and it keeps Silver useful for other questions than ours.
-\code{service\_date} comes from \code{DataFrameRef} in the feed, not from the clock, so a
-trip at 00:30 belongs to the right operating day. Silver also computes the arrival and
-departure delay in seconds (actual or expected minus aimed), and keeps \code{snapshot\_time},
-\code{run\_id} and \code{call\_status} (recorded or estimated). The data dictionary in the
-repo lists every column with how often it is filled.
+\code{journey\_id + service\_date + stop\_order}. That is the smallest unit where punctuality
+makes sense, and it keeps Silver useful for other questions than ours. \code{service\_date}
+comes from \code{DataFrameRef} in the feed, not from the clock, so a trip at 00:30 belongs to
+the right operating day. Silver also computes the arrival and departure delay in seconds
+(actual or expected minus aimed) and keeps \code{snapshot\_time}, \code{run\_id} and
+\code{call\_status} (recorded or estimated).
+
+\subsection*{Parsing}
 
 We tried Spark's XML reader first. It dropped the \code{+01:00} from the timestamps, which
 would have shifted every delay by an hour without any error, and it gave recorded and
-estimated stops different structures. So \code{flatten.py} parses each file with
-ElementTree and \code{standardize.py} converts all times to UTC. Spark still spreads the
-files over tasks:
+estimated stops different structures. So we parse each file with Python's ElementTree inside
+Spark tasks and convert all times to UTC:
 
-\begin{lstlisting}[caption={Reading Bronze in \code{silver/build.py} (shortened).}]
-# one extra Bronze day on each side, so night trips are complete
-paths = list_bronze_files(root, date_from - 1 day, date_to + 1 day)
+\begin{lstlisting}
+paths = list_bronze_files(root, start, end)   # 20:00 the day before to 02:59 the day after
 # one task per file, so a task only holds one snapshot in memory
 results = sc.parallelize(paths, len(paths)).map(read_file) \
             .persist(StorageLevel.MEMORY_AND_DISK)
-df = spark.createDataFrame(results.flatMap(lambda r: r[0]), INPUT_SCHEMA).cache()
 \end{lstlisting}
 
-The one-task-per-file part comes from our first prod run, which ran out of memory: with the
-default 1\,GB driver Spark put 288 files into 4 big tasks. The extra day on each side is
-there because Bronze folders are UTC days, while a night bus with service date $D$ can show
-up in the files of $D{+}1$. We read $D{-}1$ to $D{+}1$ and only write $D$. Before this,
-rerunning one day could overwrite the previous day with only its night trips. All columns in
-the input schema are nullable, so a row without a key reaches the rules and gets rejected
-with a reason instead of crashing \code{createDataFrame}.
+One task per file comes from our first prod run, which ran out of memory: Spark had put 288
+files into 4 big tasks. Bronze folders are UTC days, while a night bus of day $D$ can show up
+in the files of the next day, so Silver reads from 20:00 the evening before to 02:59 the
+morning after, and only writes day $D$ (Section~\ref{sec:perf}).
 
-\subsection{Cleaning rules}
+\subsection*{Reject or flag}
 
-A rejected row is gone for the analysis, while a flagged row can still be used or excluded
-later. So we only reject rows that can never give a delay, and flag the rest
-(Table~\ref{tab:rules}). Rejected rows are saved in \code{silver/rejected\_calls} with the
-code of the first rule they fail.
+A rejected row is gone for the analysis, while a flagged row can still be used or left out
+later. So we only reject rows that can never give a delay and flag the rest
+(Table~\ref{tab:rules}). Rejected rows are saved in \code{silver/rejected\_calls} with the code
+of the first rule they fail. The rules run before deduplication, so a broken row can never be
+the copy that is kept. In 27 days no row was rejected.
 
-\begin{table}[h]
+\begin{table}[htb]
 \centering\small
-\begin{tabularx}{\linewidth}{llX}
+\renewcommand{\arraystretch}{1.2}
+\begin{tabularx}{\linewidth}{@{}ll>{\raggedright\arraybackslash}X@{}}
 \toprule
 & Rule & Why \\
 \midrule
-Reject & \code{MISSING\_KEY} & no journey, service date or stop order, so no dedup \\
+Reject & \code{MISSING\_KEY} & no journey, service date or stop order, so no deduplication \\
 Reject & \code{MISSING\_LINE\_OR\_STOP} & cannot be grouped in Gold \\
-Reject & \code{MISSING\_AIMED\_TIME} & no aimed arrival or departure, so no delay \\
-\midrule
+Reject & \code{MISSING\_AIMED\_TIME} & no aimed time, so no delay \\ \rowline
 Flag & \code{is\_missing\_actual} & no actual or expected time \\
 Flag & \code{is\_delay\_outlier} & delay below $-10$\,min or above 3\,h \\
 Flag & \code{is\_bad\_stop\_name} & name contains \code{Ã} (UTF-8 read as Latin-1) \\
 Flag & \code{exclude\_from\_punctuality} & cancelled, outlier or no actual time \\
 \bottomrule
 \end{tabularx}
-\caption{Silver rules. Cancelled trips stay in Silver so Gold can report cancellations.}
+\caption{Silver rules. Cancelled trips stay in Silver so Gold can count cancellations.}
 \label{tab:rules}
 \end{table}
 
-The outlier limits were a guess at first. We checked them on 11 days of prod data: 99.8\%
-of stops are between $-5$ and $+60$ minutes, with a median of $+2.2$. The 702 stops below
+The outlier limits were a guess at first. We checked them on 11 days of prod data: 99.8\% of
+stops are between $-5$ and $+60$ minutes, with a median of $+2.2$. The 702 stops below
 $-10$ minutes were mostly times from the day before, and the 17 above 3 hours came from two
-trips shifted by 4 to 11 hours on every stop. Those are feed errors, so we kept the limits
-(Figure~\ref{fig:dist}). The rules run before deduplication so that a broken row can never
-be the one that is kept.
+trips shifted by 4 to 11 hours on every stop. These are feed errors, so we kept the limits.
 
-\subsection{Deduplication}
+\subsection*{Removing duplicates}
 
-On 2 Nov the snapshots contained 3{,}401{,}155 stop rows, which became 153{,}568 stops.
-\code{dropDuplicates} would keep a random copy, but we want the best one, so we use a window:
+Every stop is repeated in about 22 snapshots. On 2 November the snapshots had 3{,}401{,}155
+stop rows, which became 153{,}568 stops. \code{dropDuplicates} would keep a random copy, but
+we want the best one, so we use a window:
 
-\begin{lstlisting}[caption={\code{silver/dedup.py}.}]
-KEY = ["journey_id", "service_date", "stop_order"]
-w = Window.partitionBy(*KEY).orderBy(
+\begin{lstlisting}
+w = Window.partitionBy("journey_id", "service_date", "stop_order").orderBy(
     (F.col("call_status") == "recorded").desc(),  # real time before prediction
     F.col("snapshot_time").desc(),                # then the newest snapshot
-    F.col("run_id").desc(),                       # same snapshot twice: stable choice
-)
+    F.col("run_id").desc())                       # same snapshot twice: stable choice
 df.withColumn("_rn", F.row_number().over(w)).filter("_rn = 1").drop("_rn")
 \end{lstlisting}
 
-We added \code{run\_id} after the double fetch on 27 Oct: two copies of the same snapshot
-had the same \code{snapshot\_time}, Spark picked one at random, and two reruns of the same
-day did not give the same result.
+We added \code{run\_id} after the double fetch on 27 October: two copies of the same snapshot
+had the same \code{snapshot\_time}, Spark picked one at random, and two reruns of the same day
+did not give the same result.
 
-After dedup 99.3\% of stops are \code{recorded}. The other 0.7\% never got a real time and
-keep their prediction. On 10 Nov that was 1{,}014 of 153{,}724 measured stops; leaving them
-out changes the on-time share by about 0.05 points, so we keep them and count them in every
-run as \code{measured\_estimated\_only}.
+\subsection*{Quality table and reruns}
 
-\subsection{Quality table and reruns}
+Every run appends its numbers to \code{silver/quality}, one row per metric (23 per run): rows
+read, unparseable rows, rejected rows per reason, nulls, each flag, duplicates before and
+after deduplication, a schema check, and files read and skipped. With one row per metric we can
+add metrics without changing the table. Figure~\ref{fig:funnel} shows one day and
+Figure~\ref{fig:quality} all days.
 
-Every run appends its numbers to \code{silver/quality}, one row per metric: rows read,
-unparseable rows, rejected rows per reason, nulls, each flag (counted after dedup),
-duplicates before and after, a schema check, and files read and skipped. With one row per
-metric we can add new metrics without changing the table. Figure~\ref{fig:funnel} shows one
-day and Figure~\ref{fig:quality} all days.
+A Bronze file that cannot be read is skipped and counted. If more than 5\% of the files fail,
+Silver stops before writing anything: at that point a bug in our code is more likely than bad
+data, and we do not want a good day replaced by a partial one. Silver is written as Parquet
+partitioned by \code{service\_date} with dynamic partition overwrite, so a rerun only replaces
+the days it builds.
 
-A Bronze file that cannot be read is skipped and counted. If more than 5\% of the files
-fail, Silver stops before writing anything, because at that point it is more likely a bug
-in our code than bad data, and we do not want a good day replaced by a partial one. Silver
-is written as Parquet partitioned by \code{service\_date} with dynamic partition overwrite,
-so a rerun only replaces the days it computed.
-
-\begin{figure}[t]
+\begin{figure}[htb]
 \centering
-\begin{subfigure}[b]{0.49\linewidth}\centering
-  \includegraphics[width=\linewidth]{3_silver_funnel.pdf}
-  \caption{One day through Silver.}
-  \label{fig:funnel}
-\end{subfigure}\hfill
-\begin{subfigure}[b]{0.49\linewidth}\centering
-  \includegraphics[width=\linewidth]{8_delay_distribution.pdf}
-  \caption{Delay of all measured stops.}
-  \label{fig:dist}
-\end{subfigure}
-\caption{Silver quality.}
+\includegraphics[width=0.49\linewidth]{3_silver_funnel.pdf}\hfill
+\includegraphics[width=0.49\linewidth]{7_quality_per_day.pdf}
+\caption{Left: one day through Silver. Right: Silver rows and flags per service day, from the
+quality table.}
+\label{fig:funnel}\label{fig:quality}
 \end{figure}
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.85\linewidth]{7_quality_per_day.pdf}
-\caption{Silver rows and flags per service day, from the quality table.}
-\label{fig:quality}
-\end{figure}
 
 \section{Gold}
+\label{sec:gold}
 
-Silver has about 150k rows a day, while the question needs a few numbers per line, hour and
-stop. Gold has two tables partitioned by \code{service\_date}:
-\code{punctuality\_by\_line\_hour} and \code{punctuality\_by\_stop}.
+Silver keeps about 150k stop rows a day, useful for many questions. Gold answers only ours, in
+two small tables per service day (punctuality per line and hour, and per stop) and one table
+per line and hour over the whole period.
 
-On time means between 1 minute early and 3 minutes late. We use the departure delay, or the
-arrival delay at the last stop since it has no departure. The hour is the planned time in
-Europe/Oslo, converted before grouping, otherwise 8 o'clock would show up as 7. Stops are
-grouped by \code{stop\_id} because some lines send no stop names.
+How we count:
+\begin{itemize}
+  \item \textbf{On time} means from 1 minute early to 3 minutes late, based on the departure
+        time (the arrival time at the last stop).
+  \item \textbf{Cancelled trips} have no delay. They are left out of the on-time share, but
+        counted for the cancellation rate.
+  \item \textbf{The hour} is in Norwegian time. Silver keeps UTC, so Gold converts before
+        grouping; otherwise the 8 o'clock rush would show up as 7.
+  \item \textbf{Counts, not only percentages.} Each row stores how many stops were measured, on
+        time, late and early. A percentage cannot be averaged over days, but counts can be
+        added, so any period gives the exact share.
+  \item \textbf{One table over all days.} Counts can be added over days, but the 90th
+        percentile of the delay cannot: it needs all the rows. So Gold also keeps
+        \code{punctuality\_by\_line\_hour\_all}, one row per line and hour over every day in
+        Silver, with the number of days. It is rebuilt from all of Silver on every run.
+\end{itemize}
 
-Each row stores counts (\code{calls}, \code{measured\_calls}, \code{on\_time\_calls},
-\code{late\_calls}, \code{early\_calls}, \code{cancelled\_calls}) as well as the shares,
-\code{avg\_delay\_s} and \code{p90\_delay\_s}. Shares cannot be averaged across days, but
-counts can be summed and divided again, so any period gives the exact share. The average
-delay has to be weighted by \code{measured\_calls} and p90 has to be recomputed from Silver.
-We use \code{percentile\_approx} because an exact percentile needs a full sort.
+Gold is only written when Silver looks complete. Before writing, it checks two things:
+\begin{enumerate}[topsep=0.2em, itemsep=0.25em]
+  \item \textbf{Is the day complete?} Every day needs at least 20{,}000 Silver rows (even a
+        Sunday has about 55k). This catches missing data.
+  \item \textbf{Is every stop counted exactly once?} The calls in each daily Gold table must add up
+        to the Silver rows. This catches bugs in Gold, for example a line listed twice in the
+        names table.
+\end{enumerate}
 
-Line numbers come from Entur's Journey Planner. The \code{lines} step only asks about line
-ids that are new in Silver, so most nights it makes no API call, and old rows keep their
-names. The table has a few hundred rows, so Gold uses a broadcast left join; a line without
-a name still counts.
-
-Before writing, Gold checks two things:
-
-\begin{lstlisting}[caption={Gold check in \code{gold/build.py} (shortened).}]
+\begin{lstlisting}
 problems = [f"{d}: only {n} rows" for d, n in day_counts if n < 20_000]
-# every Silver row must end up in exactly one group of each table
 if line_hour_calls != silver_rows or stop_calls != silver_rows:
     problems.append("counts do not match")
 if not problems:
-    line_hour.write.mode("overwrite").partitionBy("service_date").parquet(...)
+    line_hour.repartition("service_date").write.mode("overwrite") \
+        .partitionBy("service_date").parquet(...)
 \end{lstlisting}
 
-The 20{,}000 rows catch missing data (a Sunday has about 55k). The count check catches bugs
-in Gold itself; for example a line listed twice in the names table would double that line
-in the join. If something fails, nothing is written, the old Gold stays, the step exits with
-an error and a \code{failed} line goes to \code{gold/\_status/status.jsonl}. We query Gold
-with Spark SQL in \code{scripts/gold\_report.py}:
+If a check fails, nothing is written, the old Gold stays, and the run is marked as failed in a
+status file that also tells users when Gold was last updated. All 27 days passed. We read Gold
+with Spark SQL, for example the least punctual lines:
 
-\begin{lstlisting}[language=SQL, caption={Least punctual lines.}]
+\begin{lstlisting}[language=SQL]
 SELECT line, sum(on_time_calls) / sum(measured_calls) AS on_time_share
-FROM line_hour GROUP BY line ORDER BY on_time_share LIMIT 10
+FROM line_hour_all GROUP BY line ORDER BY on_time_share LIMIT 10
 \end{lstlisting}
 
-\section{Testing, deployment and runs}
+% ===============================================================
+\section{Testing, deployment and the nightly run}
 \label{sec:lifecycle}
 
-We work on feature branches, open a PR to \code{dev}, and later merge \code{dev} into
-\code{main}. \code{tests.yml} runs ruff and 83 pytest tests on GitHub's own machines for
-every push and PR. The repo is public, so we did not want PR code running on our VMs; the
-self-hosted runners only run merged code. A merge to \code{dev} deploys to the dev VM and a
-merge to \code{main} deploys to prod (\code{git pull} and \code{pip install}).
+We work on feature branches, open a pull request to \code{dev}, and later merge \code{dev}
+into \code{main}.
 
-\code{pipeline.yml} runs at 03:17 UTC on the prod runner, or by hand for any day on dev or
-prod. Bronze stays on cron because it needs exact timing. Silver and Gold can start late,
-and running them in Actions gives us logs, history and a red or green status. The first
-scheduled runs started up to 7.5 hours late; moving from 04:00 to 03:17 helped, since GitHub
-delays full-hour schedules the most. At the end the workflow writes a summary to the run page
-(Bronze runs, Silver rows, Gold status), even after a failure. On prod the run also turns red
-with fewer than 270 of 288 valid snapshots, because the 20k check alone would let a half day
-through. All decisions are written down with date, owner and reason in
-\code{docs/decisions.md}.
+\textbf{Tests run on GitHub's machines, not on ours.} \code{tests.yml} runs ruff and pytest
+for every push and pull request. The repository is public, so anyone can open a pull request,
+and we did not want that code to run on our VMs. The tests use a small local Spark session,
+so they need no data. On 23 November \code{ubuntu-latest} changed its default Java and Spark
+could no longer write Parquet, so the workflow now pins Java 17, the same as on the VMs.
 
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.8\linewidth]{6_bronze_health.pdf}
-\caption{Bronze snapshots saved per day (UTC) and storage used.}
-\label{fig:bronze}
-\end{figure}
+\textbf{Deploy on merge.} The self-hosted runners only run code that is already merged.
+\code{deploy.yml} updates the dev VM on a merge to \code{dev} and the prod VM on a merge to
+\code{main} (\code{git pull} and \code{pip install}), so the VMs never run code nobody reviewed.
 
+\textbf{The nightly run.} \code{pipeline.yml} runs at 03:17 UTC on the prod runner, or by hand
+for any day on dev or prod. Bronze stays on cron because it needs exact timing, while Silver
+and Gold can start a bit late, and in Actions we get logs, history and a red or green status
+for free. The first scheduled runs started up to 7.5 hours late; moving from 04:00 to 03:17
+helped, because GitHub delays full-hour schedules the most.
+
+\textbf{The run page tells us if the day is good.} At the end the workflow writes a summary
+(Bronze runs, Silver rows, Gold status), also after a failure. On prod the run also turns red
+with fewer than 270 of 288 valid snapshots: the 20{,}000-row check in Gold alone would let a
+half day through.
+
+
+% ===============================================================
 \section{Performance}
+\label{sec:perf}
 
-We timed one day (4 Nov) on prod with different settings and read the stage times from the
-Spark event logs. We ran the baseline twice (310 and 313\,s), so about 3\,s is noise.
+We changed Spark settings only after measuring. Each test ran one day of data on prod, and we
+read the time of each stage from the Spark event logs~\cite{spark} (Figure~\ref{fig:perf}).
+The panels use two versions of Silver: the \emph{old} one, which read three full Bronze days,
+and the \emph{new} one with the read window described below. Panel (a) is the old version on
+4~November data. Panel (c) compares the old and the new version on the same day, 6~November.
 
-\begin{table}[h]
-\centering\small
-\begin{tabular}{lrr}
-\toprule
-Change & Before & After \\
-\midrule
-Gold, shuffle partitions 200 $\rightarrow$ 8 & 28\,s, 1{,}639 tasks & 17\,s, 91 tasks \\
-Silver, any shuffle setting & 299--314\,s & no change \\
-Silver, 1 / 2 / 3 service days & \multicolumn{2}{r}{308 / 408 / 516\,s} \\
-\bottomrule
-\end{tabular}
-\caption{Measured run times.}
-\label{tab:perf}
-\end{table}
-
-Gold only groups about 150k rows a day, so 200 shuffle partitions were mostly overhead. AQE
-is on by default but did not merge them (same number of tasks with it on or off), so we set
-8 in \code{start\_spark}.
-
-Silver did not change at all. The dedup shuffle takes 3 to 8\,s; the rest is Python: parsing
-864 XML files (about 137\,s), turning the rows into a DataFrame (about 100\,s) and a second
-pass that counts unparseable times (about 27\,s). Spark settings cannot help with that. Each
-extra Bronze day costs about 100\,s, so the extra day on each side is around two thirds of a
-nightly run, since every file gets parsed on three different nights. The obvious fix is to
-parse each file once and store the result. We did not do it before the deadline because a
-run takes about 5 minutes, which is fine for a nightly job.
-
-\begin{figure}[t]
+\begin{figure}[htb]
 \centering
-\includegraphics[width=0.85\linewidth]{5_performance.pdf}
-\caption{Time per stage in Silver and Gold for one day.}
+\includegraphics[width=\linewidth]{5_performance.pdf}
+\caption{(a) Old Silver (three Bronze days) on 4 November data: time per stage.
+(b) Gold for one day with 200 and 8 shuffle partitions.
+(c) Old and new Silver on the same day, 6 November: total time.}
 \label{fig:perf}
 \end{figure}
 
-\section{Results}
-
-A weekday gives about 153{,}000 stops, a Saturday 87k and a Sunday 55k. From 27 Oct to
-10 Nov Silver has 1{,}974{,}429 rows. About 55\% of measured stops are on time. The afternoon
-is the worst: around 15:00 only about 33\% are on time (Figure~\ref{fig:heatmap}). The worst
-line is X39 with about 15\%, an express line with three route variants between Stavanger,
-Ålgård and Gjesdal (Figure~\ref{fig:lines}). Weekdays stay between about 51\% and 57\%.
-Sundays are clearly better (65\% and 69\%), with about a third of the weekday traffic, while
-Saturdays are only slightly better than weekdays (Figure~\ref{fig:trend}).
-
-To check the numbers we rely on the Gold count check in every run, on unit tests for the
-rules and the dedup order, and on \code{scripts/check\_gold.py}, which follows one trip by
-hand from the raw XML to Silver.
-
-\begin{figure}[t]
-\centering
-\begin{subfigure}[b]{0.52\linewidth}\centering
-  \includegraphics[width=\linewidth]{1_heatmap_weekday_hour.pdf}
-  \caption{On-time share by weekday and hour (Oslo time).}
-  \label{fig:heatmap}
-\end{subfigure}\hfill
-\begin{subfigure}[b]{0.46\linewidth}\centering
-  \includegraphics[width=\linewidth]{2_worst_lines.pdf}
-  \caption{Least punctual lines.}
-  \label{fig:lines}
-\end{subfigure}
-\caption{Gold results.}
-\end{figure}
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=0.85\linewidth]{9_daily_trend.pdf}
-\caption{On-time share per service day (weekends shaded).}
-\label{fig:trend}
-\end{figure}
-
-\section{Reflection}
-
-Most of our decisions came from a measurement: the polling interval, the outlier limits,
-keeping predicted stops, the shuffle partitions. Planning for reruns early (partition
-overwrite, the extra days, a stable dedup order) made backfills and fixes easy later.
-Flagging instead of rejecting meant we could still count cancellations and change the delay
-limits without rebuilding Bronze.
-
-Some things went wrong. Fetching from both cron and Actions gave us duplicates and reruns
-that did not match. The first Silver run on prod ran out of memory. Our first 50\,GB volume
-got stuck in OpenStack while resizing, which left a 45-minute gap on 26 Oct, before the real
-collection started. All of these are fixed and documented.
-
-The main limitations:
 \begin{itemize}
-  \item One VM collects the data. If it is down, those snapshots are lost for good; a second
-        collector or a backup to object storage would fix that.
-  \item Trips that never appear in the feed are not counted. GTFS would let us count them.
-  \item 0.7\% of stops use a predicted time. The effect is small (0.05 points) but not zero.
-  \item Silver parses each Bronze file three times and is limited by Python.
-  \item \code{avg\_delay\_s} and \code{p90\_delay\_s} cannot simply be added over days.
-  \item \code{read\_rows} in \code{silver/build.py} is only used by tests and repeats the
-        Spark path; the tests should call \code{read\_file} instead.
+  \item \textbf{Gold: 8 shuffle partitions instead of 200.} Gold groups only about 150k rows a
+        day, so 200 tasks were mostly overhead. With 8, Gold went from 28\,s to 17\,s.
+  \item \textbf{Silver: Spark settings did not help.} The shuffle for removing duplicates takes
+        only a few seconds. Most of the time is Python reading the XML files, and each Bronze
+        day read costs about 100\,s. So the fix was to read fewer files.
+  \item \textbf{Silver: read only the hours it needs.} A night bus that belongs to day $D$ can
+        appear in the files of the next UTC day, so the first version read three full Bronze
+        days (864 files) to build one day. We checked all 27 days: the stops of day $D$ appear
+        from about 23:20 UTC the evening before until at most 01:15 the morning after. With
+        2 hours of margin, Silver now reads from 20:00 the evening before to 02:59 the morning
+        after (372 files). This cut the run from 308\,s to 141\,s, with exactly the same rows.
+        It also makes reruns give the same result, because the old version read up to the
+        moment the run started. 
+  \item \textbf{One Parquet file per day.} Silver and Gold are written with
+        \code{repartition("service\_date")}, so each day is one file instead of one per task,
+        and later reads open fewer small files. The Silver quality metrics are now computed in
+        one aggregation instead of several separate counts.
 \end{itemize}
 
-What we take away: the slow part was Python, not Spark, and we only saw that in the event
-logs. And with a live source, collection is what matters most. Silver and Gold can always be
-rerun, a missed snapshot cannot. Next we would parse each file once, add GTFS for missing
-trips, and build a small dashboard on top of Gold.
+The files between 20:00 and 03:00 UTC are still read by two nightly runs. Saving each parsed
+Bronze file once, split by service day, would remove that too; we leave it as future work.
 
-\section*{Who did what}
+% ===============================================================
+\section{Results}
+\label{sec:results}
 
-Tommaso: repository, self-hosted runners, GitHub Actions workflows, \code{flatten},
-\code{standardize}, \code{dedup}. Oliwier: OpenStack setup, Bronze ingestion and the
-retention test, rules, quality table, Gold, line names, performance measurements. Both:
-design decisions, code reviews and \code{docs/decisions.md}.
+Over 27 days Silver has 3{,}485{,}540 stop calls (153k on a weekday, 55k on a Sunday). 55\% of
+measured stops are on time and 0.18\% are cancelled. The afternoon rush is the worst: on
+weekdays only 33\% of stops at 15:00 are on time, and the morning rush (7--8) is at about 48\%
+(Figure~\ref{fig:heatmap}). Weekends are better than weekdays (62\% against 54\%).
 
-% TODO: say how AI tools were used, as agreed in the group.
+\begin{figure}[htb]
+\centering
+\includegraphics[width=\linewidth]{1_heatmap_weekday_hour.pdf}
+\caption{On-time share by weekday and hour of planned departure (Norwegian time).}
+\label{fig:heatmap}
+\end{figure}
 
-\small
+X39 is the worst line with 14\% on time (Figure~\ref{fig:lines}). It is an express line from
+Stavanger via UiS and Forus to Ålgård. Morning trips are already almost 5 minutes late at the
+first stop and about 16 minutes late at the last. Four of the ten worst lines are school routes
+(\code{SK}). X39 and the school routes run mostly in the rush hours, when traffic is heaviest,
+which fits the heatmap. Three of the ten are night lines (\code{N}).
+
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.75\linewidth]{2_worst_lines.pdf}
+\caption{The ten least punctual lines (at least 500 measured stops).}
+\label{fig:lines}
+\end{figure}
+
+% ===============================================================
+\section{Reflection}
+\label{sec:reflection}
+
+\textbf{What worked.} We measured before deciding, and several first guesses were wrong
+(15-minute polling, 200 partitions, three Bronze days). Planning for reruns early made
+backfills easy, and flagging problems instead of deleting rows let us change the delay limits
+later without touching Bronze.
+
+\textbf{What did not work at first.} Cron and GitHub Actions together fetched every snapshot
+twice, the first Silver run on prod ran out of memory, the first volume got stuck, and the line
+names skipped Bronze. All are fixed and logged in \code{docs/decisions.md}.
+
+\begin{table}[htb]
+\centering\small
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{4.5cm}>{\raggedright}p{2.4cm}X@{}}
+\toprule
+What is missing & How much & Why we accept it \\
+\midrule
+Failed Bronze run (DNS, 29 Oct) & 1 of 7{,}778 & A trip is in many snapshots, so almost nothing is lost \\
+Stops with only a predicted time & 0.2--1.8\% a day & Changes the on-time share by 0.05 points \\
+Delay outliers & below 0.1\% a day & Feed errors; flagged and left out of punctuality only \\
+Trips that are not in the feed & unknown & Would need the GTFS timetable \\
+\bottomrule
+\end{tabularx}
+\caption{Data we miss. Each row is counted in the Bronze metadata or the Silver quality table.}
+\label{tab:missing}
+\end{table}
+
+\textbf{Limitations.} One VM collects the data, so if it is down those snapshots are lost for
+good. All our data is from winter time, so the read window is not tested in summer time.
+
+\textbf{What we learned.} With a live source, collection matters most: Silver and Gold can be
+rerun, a missed snapshot cannot. Our slow part was Python, not Spark, and reading less data
+helped where Spark settings could not. The presentation feedback found a weak spot we had
+stopped seeing ourselves. Next we would save parsed Bronze files once, add GTFS, and build a
+small dashboard on Gold.
+
+% ===============================================================
 \begin{thebibliography}{9}
-\bibitem{entur} Entur. \emph{Real-time data (SIRI) API}.
-  \url{https://developer.entur.org/pages-real-time-api}
-\bibitem{jp} Entur. \emph{Journey Planner API v3}.
-  \url{https://developer.entur.org/pages-journeyplanner-journeyplanner}
-\bibitem{nlod} Norwegian Licence for Open Government Data (NLOD) 2.0.
-  \url{https://data.norge.no/nlod/en/2.0}
-\bibitem{spark} Apache Spark documentation, \emph{Performance Tuning}.
-  \url{https://spark.apache.org/docs/latest/sql-performance-tuning.html}
-\bibitem{repo} Project repository.
-  \url{https://github.com/tommasofacchin/rogaland-transit-medallion}
+\raggedright
+\bibitem{entur} Entur. \emph{Real-time data (SIRI)}. \url{https://developer.entur.org/pages-real-time-api}
+\bibitem{jp} Entur. \emph{Journey Planner API v3}. \url{https://developer.entur.org/pages-journeyplanner-journeyplanner}
+\bibitem{nlod} \emph{Norwegian Licence for Open Government Data (NLOD) 2.0}. \url{https://data.norge.no/nlod/en/2.0}
+\bibitem{spark} Apache Spark. \emph{Performance Tuning}. \url{https://spark.apache.org/docs/latest/sql-performance-tuning.html}
+\bibitem{repo} Our repository. \url{https://github.com/tommasofacchin/rogaland-transit-medallion}
 \end{thebibliography}
 
 \end{document}
