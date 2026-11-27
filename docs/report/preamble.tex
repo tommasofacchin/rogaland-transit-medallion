@@ -1,0 +1,34 @@
+% Packages and macros for the report.
+% acmart already loads graphicx, xcolor, hyperref, amsmath and natbib.
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit}
+\usepackage{colortbl}
+
+\graphicspath{{figures/}}
+\setlist[itemize]{topsep=0.2em, itemsep=0.15em, leftmargin=*}
+\setlist[enumerate]{topsep=0.2em, itemsep=0.15em, leftmargin=*}
+\setlength{\emergencystretch}{3em}
+
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\rowline}{\arrayrulecolor{black!25}\midrule\arrayrulecolor{black}}
+
+\definecolor{codebg}{gray}{0.96}
+\definecolor{codecomment}{rgb}{0.35,0.45,0.35}
+\definecolor{codekw}{rgb}{0.10,0.25,0.55}
+\lstset{
+  language=Python,
+  basicstyle=\ttfamily\scriptsize,
+  backgroundcolor=\color{codebg},
+  keywordstyle=\color{codekw}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  stringstyle=\color{black!70},
+  frame=single, rulecolor=\color{black!20},
+  breaklines=true, columns=fullflexible,
+  showstringspaces=false,
+  xleftmargin=2pt, xrightmargin=2pt,
+  aboveskip=0.5em, belowskip=0.3em
+}

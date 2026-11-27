@@ -1,0 +1,52 @@
+Silver keeps about 150k stop rows a day, useful for many questions. Gold answers only ours, in
+two small tables per service day (punctuality per line and hour, and per stop) and one table
+per line and hour over the whole period.
+
+How we count:
+\begin{itemize}
+  \item \textbf{On time} means from 1 minute early to 3 minutes late, based on the departure
+        time (the arrival time at the last stop).
+  \item \textbf{Cancelled trips} have no delay. They are left out of the on-time share, but
+        counted for the cancellation rate.
+  \item \textbf{The hour} is in Norwegian time. Silver keeps UTC, so Gold converts before
+        grouping; otherwise the 8 o'clock rush would show up as 7.
+  \item \textbf{Counts, not only percentages.} Each row stores how many stops were measured, on
+        time, late and early. A percentage cannot be averaged over days, but counts can be
+        added, so any period gives the exact share.
+  \item \textbf{One table over all days.} Counts can be added over days, but the 90th
+        percentile of the delay cannot: it needs all the rows. So Gold also keeps
+        \code{punctuality\_by\_line\_hour\_all}, one row per line and hour over every day in
+        Silver, with the number of days. It is rebuilt from all of Silver on every run.
+\end{itemize}
+
+Gold is only written when Silver looks complete. Before writing, it checks two things:
+\begin{enumerate}[topsep=0.2em, itemsep=0.25em]
+  \item \textbf{Is the day complete?} Every day needs at least 20{,}000 Silver rows (even a
+        Sunday has about 55k). This catches missing data.
+  \item \textbf{Is every stop counted exactly once?} The calls in each daily Gold table must add up
+        to the Silver rows. This catches bugs in Gold, for example a line listed twice in the
+        names table.
+\end{enumerate}
+
+\begin{lstlisting}
+problems = [f"{d}: only {n} rows"
+            for d, n in day_counts if n < 20_000]
+if line_hour_calls != silver_rows \
+        or stop_calls != silver_rows:
+    problems.append("counts do not match")
+if not problems:
+    line_hour.repartition("service_date") \
+        .write.mode("overwrite") \
+        .partitionBy("service_date").parquet(...)
+\end{lstlisting}
+
+If a check fails, nothing is written, the old Gold stays, and the run is marked as failed in a
+status file that also tells users when Gold was last updated. All 27 days passed. We read Gold
+with Spark SQL, for example the least punctual lines:
+
+\begin{lstlisting}[language=SQL]
+SELECT line,
+       sum(on_time_calls) / sum(measured_calls) AS on_time_share
+FROM line_hour_all
+GROUP BY line ORDER BY on_time_share LIMIT 10
+\end{lstlisting}
