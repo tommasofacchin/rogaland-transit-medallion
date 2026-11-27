@@ -1,0 +1,16 @@
+We want to find out which Kolumbus lines, stops and hours are least punctual. A planner at
+Kolumbus or in the county could use this to decide which timetables to fix first. We picked
+this data because we use these buses ourselves, and because it forced real decisions: the API
+only shows the current state, and every answer repeats all running trips.
+
+Some things are not part of the project:
+\begin{itemize}
+  \item \textbf{Live (streaming) results.} A report once a night is enough for this question.
+  \item \textbf{Trips that are not in the live feed at all.} We can only measure trips that
+        Entur sends. Finding missing trips would need the full timetable (GTFS).
+  \item \textbf{Passenger numbers and a finished dashboard.} Gold is read with Spark SQL and
+        charts (Section~\ref{sec:results}).
+\end{itemize}
+
+We wrote the layers as Python modules with one entry point (\code{jobs/run\_pipeline.py})
+instead of notebooks, because modules are easier to schedule and to test.

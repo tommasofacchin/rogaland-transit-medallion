@@ -1,0 +1,34 @@
+\textbf{What worked.} We measured before deciding, and several first guesses were wrong
+(15-minute polling, 200 partitions, three Bronze days). Planning for reruns early made
+backfills easy, and flagging problems instead of deleting rows let us change the delay limits
+later without touching Bronze.
+
+\textbf{What did not work at first.} Cron and GitHub Actions together fetched every snapshot
+twice, the first Silver run on prod ran out of memory, the first volume got stuck, and the line
+names skipped Bronze. All are fixed and logged in \code{docs/decisions.md}.
+
+\begin{table}[htb]
+\caption{Data we miss. Each row is counted in the Bronze metadata or the Silver quality table.}
+\label{tab:missing}
+\centering\footnotesize
+\renewcommand{\arraystretch}{1.25}
+\begin{tabularx}{\linewidth}{@{}>{\raggedright}p{2.5cm}>{\raggedright}p{1.6cm}>{\raggedright\arraybackslash}X@{}}
+\toprule
+What is missing & How much & Why we accept it \\
+\midrule
+Failed Bronze run (DNS, 29 Oct) & 1 of 7{,}778 & A trip is in many snapshots, so almost nothing is lost \\
+Stops with only a predicted time & 0.2--1.8\% a day & Changes the on-time share by 0.05 points \\
+Delay outliers & below 0.1\% a day & Feed errors; flagged and left out of punctuality only \\
+Trips that are not in the feed & unknown & Would need the GTFS timetable \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\textbf{Limitations.} One VM collects the data, so if it is down those snapshots are lost for
+good. All our data is from winter time, so the read window is not tested in summer time.
+
+\textbf{What we learned.} With a live source, collection matters most: Silver and Gold can be
+rerun, a missed snapshot cannot. Our slow part was Python, not Spark, and reading less data
+helped where Spark settings could not. The presentation feedback found a weak spot we had
+stopped seeing ourselves. Next we would save parsed Bronze files once, add GTFS, and build a
+small dashboard on Gold.

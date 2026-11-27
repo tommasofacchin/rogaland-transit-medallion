@@ -1,0 +1,7 @@
+\noindent
+Entur's live API for Kolumbus buses in Rogaland keeps no history, so we built it ourselves.
+We save the feed every 5 minutes in Bronze, turn about 3.4 million repeated stop rows per day
+into 153{,}000 stop calls in Silver, and group them into three punctuality tables in Gold. It
+runs on two OpenStack VMs with PySpark and GitHub Actions. Over 27 days (27 October to
+22 November 2026), 55\% of stops are on time, 15:00 on weekdays is the worst hour (33\%), and
+X39 is the worst line (14\%).
