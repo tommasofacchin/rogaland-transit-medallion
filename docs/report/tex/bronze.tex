@@ -1,0 +1,51 @@
+\subsection*{How often to poll}
+
+Our first plan was to poll every 15 minutes. Before we started, we tested how long a finished
+trip stays in the feed: on 26 October we saved 32 snapshots, 5 minutes apart, and compared the
+last snapshot of each trip with the time of its last stop (\code{scripts/retention\_check.py}).
+Of 771 trips that left the feed, all stayed between 4 and 11 minutes after the last stop
+(median 8), and none stayed 15. So 15 minutes would have been too slow: for most trips we would
+never see the real time at the last stops.
+
+With 5 minutes, almost every trip is seen after it has finished. A trip that leaves after only
+4 minutes can still fall between two polls, and then its last stops keep the predicted time
+instead of the real one. We count these stops in every Silver run: 0.2--1.8\% a day. Leaving
+them out changes the on-time share by only 0.05 points, so we keep them. Polling more often
+would save these few stops but multiply storage and API calls.
+
+\subsection*{How the raw data is kept}
+
+\begin{itemize}
+  \item Every answer is saved exactly as received, gzipped (about 15 times smaller, and Spark
+        reads it directly), in folders by UTC date and hour.
+  \item Every run, also a failed one, adds one line to a metadata file: time, HTTP status, size,
+        checksum and error. Broken XML is saved too and marked as broken.
+  \item A file is never overwritten, and every Silver row keeps the id of its Bronze file, so
+        any number in Gold can be traced back to one raw answer.
+\end{itemize}
+
+Bronze runs from cron on the prod VM, not from a GitHub schedule. When we tried both, every
+snapshot was fetched twice, and GitHub's scheduled runs started minutes late, which is enough
+for a trip to leave the feed. From 27 October to 22 November there were 7{,}778 runs, one
+failed (a DNS error on 29 October), and there was no gap longer than 10 minutes.
+
+\subsection*{Line names come from Bronze too}
+
+The feed only has line ids like \code{KOL:Line:8\_2043}. Entur's Journey Planner~\cite{jp}
+knows the public number (here X39). Our first version called this API and wrote the answer
+directly into a table, so the raw answer was never kept. We got this feedback at the
+presentation and changed it:
+\begin{itemize}
+  \item The step \code{bronze-lines} saves the full Kolumbus line list (320 lines) once a day in
+        its own Bronze folder, raw, with a metadata line, the same way as the SIRI data.
+  \item The step \code{lines} reads all saved lists with Spark and keeps the newest name for
+        each line id. A line that stops running keeps its last name.
+  \item If the API is down, we only get a warning and Gold uses the lists already saved.
+\end{itemize}
+
+\begin{lstlisting}
+w = Window.partitionBy("line") \
+          .orderBy(F.col("fetched_at").desc())
+names = lines.withColumn("_rn", F.row_number().over(w)) \
+             .filter("_rn = 1").drop("_rn")
+\end{lstlisting}

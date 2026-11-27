@@ -1,0 +1,16 @@
+\begin{itemize}
+  \item \textbf{Two VMs.} \code{dat535-dev} is for trying changes on a small copy of the data,
+        \code{dat535-prod} for collection and the nightly run. Both are \code{m1.large}
+        (4 cores, 8\,GB RAM) with Java 17 and PySpark 4.1.3, and run the same code with their
+        own config file.
+  \item \textbf{One floating IP.} Our quota has only one, so prod has it and we reach dev
+        through prod with SSH \code{ProxyJump}.
+  \item \textbf{Data on its own volume.} All data is on a separate 200\,GB volume on
+        \code{/data}, so it survives a rebuilt VM.
+  \item \textbf{Spark in local mode on one VM.} A weekday of Bronze is only 124\,MB compressed,
+        and a cluster over our two VMs would mix dev and prod. Every step works per file or per
+        day, so the same code could run on a real cluster if the data grew.
+  \item \textbf{Self-hosted GitHub runners.} GitHub's machines cannot reach our VMs, so each
+        VM runs its own runner. The runners only run merged code (deploy and the nightly run),
+        never code from a pull request (Section~\ref{sec:lifecycle}).
+  \end{itemize}

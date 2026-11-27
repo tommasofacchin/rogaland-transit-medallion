@@ -1,0 +1,17 @@
+We use Entur's real-time API for the SIRI Estimated Timetable~\cite{entur}. It is free and
+open (NLOD licence~\cite{nlod}) and needs no key. Each call returns one XML file of about 9\,MB
+with all Kolumbus trips running at that moment. For every trip it lists the stops already
+passed, with real times, and the stops ahead, with predicted times. To get only Kolumbus we
+use the parameter \code{datasetId=KOL}; the parameter in our first plan
+(\code{datasource=KOL}) did not filter anything.
+
+Since the API only shows the present, every day without collection is lost for good. So we
+started Bronze on 26 October, before any Silver code existed. While it was running, we studied
+the raw files and found what Silver had to handle: times with a local offset (\code{+01:00})
+just after a clock change, each stop repeated in about 22 snapshots, no line numbers, a missing
+\code{Cancellation} field, broken stop names (\code{Ã} instead of \code{ø}) and several route
+variants per line.
+
+At 288 snapshots a day this is about 5.3 million stop rows and 2.6\,GB before compression,
+and the archive grows every day. The work splits naturally by file, which is why we use Spark,
+even though the Gold tables are small.

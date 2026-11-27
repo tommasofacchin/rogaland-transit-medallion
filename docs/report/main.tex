@@ -1,0 +1,80 @@
+%%%%
+% Project report based on the DAT620 template (ACM sigconf),
+% edited by Leander Jehl and Hein Meling.
+\documentclass[sigconf]{acmart}
+
+\input{dat620-setup}
+
+%In the preamble file you can include packages and define macros.
+\input{preamble}
+
+\begin{document}
+\title{Rogaland Transit Medallion}
+\subtitle{How punctual are the buses in Rogaland?\\DAT535 Data Engineering, Group 5}
+
+%TODO: fill in the emails
+\author{Tommaso Facchin}
+\affiliation{University of Stavanger, Norway}
+\email{tofac4317@stud.uis.no}
+
+\author{Oliwier Trawinski}
+\affiliation{University of Stavanger, Norway}
+\email{TODO@stud.uis.no}
+
+%TODO: add the name of one or more supervisors
+\supervisors{TODO}
+
+\begin{abstract}
+\input{tex/abstract}
+\end{abstract}
+
+\keywords{Data engineering, medallion architecture, PySpark, public transport}
+
+\maketitle
+
+\section{Scope}
+\input{tex/scope}
+
+\section{Medallion architecture}
+\input{tex/architecture}
+
+\section{The data}
+\label{sec:data}
+\input{tex/data}
+
+\section{Platform on OpenStack}
+\label{sec:platform}
+\input{tex/platform}
+
+\section{Bronze}
+\label{sec:bronze}
+\input{tex/bronze}
+
+\section{Silver}
+\label{sec:silver}
+\input{tex/silver}
+
+\section{Gold}
+\label{sec:gold}
+\input{tex/gold}
+
+\section{Testing, deployment and the nightly run}
+\label{sec:lifecycle}
+\input{tex/lifecycle}
+
+\section{Performance}
+\label{sec:perf}
+\input{tex/performance}
+
+\section{Results}
+\label{sec:results}
+\input{tex/results}
+
+\section{Reflection}
+\label{sec:reflection}
+\input{tex/reflection}
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}
